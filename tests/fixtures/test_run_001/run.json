@@ -1,0 +1,18 @@
+{
+  "run_id": "test_run_001",
+  "start_time": "2026-09-22T10:42:50",
+  "end_time": "2026-09-22T10:42:51",
+  "elapsed": 0.99,
+  "exit_code": 0,
+  "success": true,
+  "command": "energyplus -w USA_CO_Golden-NREL.724666_TMY3.epw -r 1ZoneUncontrolled.idf",
+  "idf_path": "1ZoneUncontrolled.idf",
+  "weather_path": "USA_CO_Golden-NREL.724666_TMY3.epw",
+  "idf_sha256": "abc123",
+  "weather_sha256": "def456",
+  "output_files": [
+    {"name": "eplusout.err", "size": 883},
+    {"name": "eplusout.end", "size": 97},
+    {"name": "eplustbl.xml", "size": 174652}
+  ]
+}

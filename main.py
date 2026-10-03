@@ -30,6 +30,7 @@ def main() -> int:
         config_service=container.config_service,
         idd_service=container.idd_service,
         results_service=container.results_service,
+        run_repository=container.run_repository,
     )
     window.show()
     return app.exec()

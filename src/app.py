@@ -12,6 +12,7 @@ from pathlib import Path
 from src.core.idf.parser import IDFParser
 from src.core.idf.serializer import IDFSerializer
 from src.persistence.config_store import ConfigStore
+from src.persistence.run_repository import RunRepository
 from src.services.config_service import ConfigService
 from src.services.ep_runner import EPRunner
 from src.services.idd_service import IDDService
@@ -71,6 +72,7 @@ class Application:
         self.results_service = ResultsService()
         self.ep_runner = EPRunner()
         self.run_manager = RunManager(self.ep_runner, runs_dir)
+        self.run_repository = RunRepository(runs_dir)
 
     def load_idd(self) -> None:
         """根据配置加载 IDD（启动时调用）。"""

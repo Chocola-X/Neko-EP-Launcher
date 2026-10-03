@@ -29,12 +29,14 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.idf.models import IDFDocument, IDFObject
+from src.persistence.run_repository import RunRepository
 from src.services.config_service import ConfigService
 from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
 from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager
 from src.ui.editor.idf_editor import IDFEditor
+from src.ui.run.history_view import HistoryView
 from src.ui.run.run_panel import RunPanel
 from src.ui.settings.settings_dialog import SettingsDialog
 from src.ui.theme import apply_theme
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
         config_service: ConfigService,
         idd_service: IDDService | None = None,
         results_service: ResultsService | None = None,
+        run_repository: RunRepository | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EnergyPlus 启动器")
@@ -65,6 +68,7 @@ class MainWindow(QMainWindow):
         self._config = config_service
         self._idd_service = idd_service
         self._results_service = results_service or ResultsService()
+        self._run_repository = run_repository
 
         self._doc: IDFDocument | None = None
         self._current_path: str = ""
@@ -127,6 +131,9 @@ class MainWindow(QMainWindow):
         self._act_sync_tree = QAction("从文本同步到树", self)
         self._act_sync_tree.triggered.connect(self._sync_tree_from_text)
 
+        self._act_history = QAction("运行历史", self)
+        self._act_history.triggered.connect(self._show_history)
+
     def _build_ui(self) -> None:
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -166,6 +173,18 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, files_dock)
         files_dock.hide()
 
+        if self._run_repository is not None:
+            history_dock = QDockWidget("运行历史", self)
+            history_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
+            self._history_view = HistoryView(
+                self._run_repository, self._results_service
+            )
+            history_dock.setWidget(self._history_view)
+            self.addDockWidget(Qt.BottomDockWidgetArea, history_dock)
+            history_dock.hide()
+        else:
+            self._history_view = None
+
         self._tree.objectSelected.connect(self._on_object_selected)
         self._field_panel.objectChanged.connect(self._on_object_changed)
         self._editor.textChanged.connect(self._on_text_changed)
@@ -199,6 +218,7 @@ class MainWindow(QMainWindow):
 
         run_menu = mb.addMenu("运行(&R)")
         run_menu.addAction(self._act_run)
+        run_menu.addAction(self._act_history)
 
         view_menu = mb.addMenu("视图(&V)")
         for dock in self.findChildren(QDockWidget):
@@ -442,6 +462,18 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self._config, self)
         if dlg.exec() == SettingsDialog.Accepted:
             apply_theme(self._config.config.theme)
+
+    def _show_history(self) -> None:
+        """显示运行历史面板。"""
+        if self._history_view is None:
+            QMessageBox.information(self, "提示", "运行历史不可用")
+            return
+        for dock in self.findChildren(QDockWidget):
+            if dock.widget() is self._history_view:
+                dock.show()
+                dock.raise_()
+                self._history_view.refresh()
+                return
 
     def _show_about(self) -> None:
         QMessageBox.about(
