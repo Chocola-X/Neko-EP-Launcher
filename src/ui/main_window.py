@@ -32,6 +32,7 @@ from src.core.idf.models import IDFDocument, IDFObject
 from src.services.config_service import ConfigService
 from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
+from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager
 from src.ui.editor.idf_editor import IDFEditor
 from src.ui.run.run_panel import RunPanel
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         idf_service: IDFService,
         config_service: ConfigService,
         idd_service: IDDService | None = None,
+        results_service: ResultsService | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EnergyPlus 启动器")
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
         self._idf_service = idf_service
         self._config = config_service
         self._idd_service = idd_service
+        self._results_service = results_service or ResultsService()
 
         self._doc: IDFDocument | None = None
         self._current_path: str = ""
@@ -150,7 +153,9 @@ class MainWindow(QMainWindow):
 
         run_dock = QDockWidget("运行面板", self)
         run_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-        self._run_panel = RunPanel(self._run_manager, self._config)
+        self._run_panel = RunPanel(
+            self._run_manager, self._config, self._results_service
+        )
         run_dock.setWidget(self._run_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, run_dock)
 

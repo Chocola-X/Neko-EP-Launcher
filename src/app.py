@@ -16,6 +16,7 @@ from src.services.config_service import ConfigService
 from src.services.ep_runner import EPRunner
 from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
+from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class Application:
         self.config_service = ConfigService(self.config_store)
         self.idf_service = IDFService(IDFParser(), IDFSerializer())
         self.idd_service = IDDService(IDD_CACHE)
+        self.results_service = ResultsService()
         self.ep_runner = EPRunner()
         self.run_manager = RunManager(self.ep_runner, runs_dir)
 

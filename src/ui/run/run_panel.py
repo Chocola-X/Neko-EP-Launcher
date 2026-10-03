@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QTextCursor
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -21,17 +21,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSplitter,
     QTabWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from src.services.config_service import ConfigService
 from src.services.ep_runner import EPRunner, RunResult
+from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager, RunRequest
+from src.ui.results.results_view import ResultsView
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +48,13 @@ class RunPanel(QWidget):
         self,
         run_manager: RunManager,
         config_service: ConfigService,
+        results_service: ResultsService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._run_manager = run_manager
         self._config = config_service
+        self._results_service = results_service or ResultsService()
         self._idf_path = ""
         self._build_ui()
         self._connect_signals()
@@ -131,29 +132,11 @@ class RunPanel(QWidget):
         tabs.addTab(self._log, "运行日志")
 
         result_tab = self._build_result_tab()
-        tabs.addTab(result_tab, "结果文件")
+        tabs.addTab(result_tab, "结果")
         layout.addWidget(tabs, 1)
 
     def _build_result_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        splitter = QSplitter(Qt.Horizontal)
-
-        self._file_tree = QTreeWidget()
-        self._file_tree.setHeaderLabels(["文件名", "大小"])
-        self._file_tree.setColumnWidth(0, 280)
-        self._file_tree.itemClicked.connect(self._on_file_clicked)
-        splitter.addWidget(self._file_tree)
-
-        self._file_view = QPlainTextEdit()
-        self._file_view.setReadOnly(True)
-        self._file_view.setFont(QFont("Monospace"))
-        splitter.addWidget(self._file_view)
-        splitter.setSizes([300, 700])
-        layout.addWidget(splitter, 1)
-        return tab
+        return ResultsView(self._results_service)
 
     def _connect_signals(self) -> None:
         self._run_manager.lineOutput.connect(self._append_log)
@@ -278,32 +261,15 @@ class RunPanel(QWidget):
         self._append_log(f"[错误] {msg}")
 
     def _populate_results(self, result: RunResult) -> None:
-        self._file_tree.clear()
         run_dir = Path(result.run_dir)
         if not run_dir.exists():
             return
-        for name in result.output_files:
-            fpath = run_dir / name
-            size = fpath.stat().st_size if fpath.exists() else 0
-            size_str = f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
-            item = QTreeWidgetItem([name, size_str])
-            item.setData(0, Qt.UserRole, str(fpath))
-            if name.endswith(".err"):
-                item.setForeground(0, QColor("#E06C75"))
-            elif name.endswith(".csv"):
-                item.setForeground(0, QColor("#98C379"))
-            elif name.endswith(".eso"):
-                item.setForeground(0, QColor("#56B6C2"))
-            self._file_tree.addTopLevelItem(item)
+        result_widget = self._find_result_widget()
+        if result_widget is not None:
+            result_widget.load_from_run_dir(run_dir)
 
-    def _on_file_clicked(self, item: QTreeWidgetItem, _) -> None:
-        path = item.data(0, Qt.UserRole)
-        if not path or not Path(path).exists():
-            return
-        try:
-            if Path(path).stat().st_size > 5 * 1024 * 1024:
-                self._file_view.setPlainText("[文件过大，请使用外部编辑器查看]")
-                return
-            self._file_view.setPlainText(Path(path).read_text(encoding="utf-8", errors="replace"))
-        except OSError as e:
-            self._file_view.setPlainText(f"[读取失败: {e}]")
+    def _find_result_widget(self) -> ResultsView | None:
+        """查找结果视图 widget。"""
+        for child in self.findChildren(ResultsView):
+            return child
+        return None

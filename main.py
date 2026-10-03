@@ -29,6 +29,7 @@ def main() -> int:
         idf_service=container.idf_service,
         config_service=container.config_service,
         idd_service=container.idd_service,
+        results_service=container.results_service,
     )
     window.show()
     return app.exec()
