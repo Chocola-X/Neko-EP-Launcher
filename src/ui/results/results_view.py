@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
 
 from src.core.results.models import ErrorRecord, ReportTable, VariableInfo
 from src.services.results_service import ResultsService
+from src.ui.results.summary_plot import SummaryPlotView
+from src.ui.results.timeseries_plot import TimeseriesPlotView
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +285,12 @@ class ResultsView(QWidget):
         self._summary_view = SummaryView()
         self._tabs.addTab(self._summary_view, "汇总报告")
 
+        self._timeseries_plot = TimeseriesPlotView()
+        self._tabs.addTab(self._timeseries_plot, "时序曲线")
+
+        self._summary_plot = SummaryPlotView()
+        self._tabs.addTab(self._summary_plot, "能耗图表")
+
         self._timeseries_view = TimeseriesView()
         self._tabs.addTab(self._timeseries_view, "时序数据")
 
@@ -299,9 +307,13 @@ class ResultsView(QWidget):
 
         tables = self._service.load_tables(run_dir)
         self._summary_view.set_tables(tables)
+        self._summary_plot.set_tables(tables)
 
         rdd_vars = self._service.load_rdd_variables(run_dir)
         self._timeseries_view.set_variables(rdd_vars)
+
+        sql_reader = self._service.open_sql_reader(run_dir)
+        self._timeseries_plot.set_reader(sql_reader)
 
         files = self._service.list_output_files(run_dir)
         self._raw_view.set_files(files, self._run_dir)
@@ -314,5 +326,7 @@ class ResultsView(QWidget):
     def clear(self) -> None:
         self._error_view.clear()
         self._summary_view.clear()
+        self._timeseries_plot.clear()
+        self._summary_plot.clear()
         self._timeseries_view.clear()
         self._raw_view.clear()
