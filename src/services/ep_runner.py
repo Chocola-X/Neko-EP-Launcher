@@ -14,6 +14,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
+from src.core.entities.run_options import RunOptions
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,6 +99,7 @@ class EPRunner(QObject):
         idf_filename: str,
         weather_filename: str = "",
         extra_args: str = "",
+        run_options: RunOptions | None = None,
     ) -> RunResult | None:
         """在指定目录启动 EnergyPlus。
 
@@ -106,6 +109,7 @@ class EPRunner(QObject):
             idf_filename: 工作目录内 IDF 文件名。
             weather_filename: 工作目录内天气文件名（可空）。
             extra_args: 附加命令行参数（空格分隔）。
+            run_options: 结构化运行选项（优先于 extra_args）。
 
         Returns:
             RunResult 或 None（启动失败）。
@@ -118,12 +122,17 @@ class EPRunner(QObject):
             return None
 
         run_dir_path = Path(run_dir)
-        args: list[str] = []
-        if weather_filename:
-            args.extend(["-w", weather_filename])
-        if extra_args:
-            args.extend(extra_args.split())
-        args.append(idf_filename)
+        if run_options is not None:
+            if weather_filename and not run_options.weather_path:
+                run_options.weather_path = weather_filename
+            args = run_options.to_args(idf_filename)
+        else:
+            args = []
+            if weather_filename:
+                args.extend(["-w", weather_filename])
+            if extra_args:
+                args.extend(extra_args.split())
+            args.append(idf_filename)
         command = f"{ep_executable} {' '.join(args)}"
 
         result = RunResult(

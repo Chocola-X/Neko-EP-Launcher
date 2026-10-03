@@ -16,6 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from src.core.entities.run_options import RunOptions
 from src.services.ep_runner import EPRunner, RunResult
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,14 @@ class RunRequest:
         weather_path: 天气文件路径（可空）。
         run_id: 运行标识（空则用时间戳）。
         extra_args: 附加命令行参数。
+        options: 结构化运行选项（优先于 extra_args）。
     """
 
     idf_path: str
     weather_path: str = ""
     run_id: str = ""
     extra_args: str = ""
+    options: RunOptions | None = None
 
 
 class RunManager(QObject):
@@ -121,6 +124,7 @@ class RunManager(QObject):
             idf_filename=idf_dest.name,
             weather_filename=weather_filename,
             extra_args=request.extra_args,
+            run_options=request.options,
         )
         if result is None:
             return None
