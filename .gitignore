@@ -1,5 +1,14 @@
 .codeartsdoer/
 .codex/
 __pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 data/
-test/
+config.json
+resources/idd_cache.json
+*.egg-info/
+build/
+dist/

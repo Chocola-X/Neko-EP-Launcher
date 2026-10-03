@@ -1,20 +1,32 @@
-"""IDF 文件编辑器组件，带语法高亮和行号。"""
-from PySide6.QtCore import Qt, QRect, QSize
+"""IDF 文本编辑器组件，带语法高亮与行号。
+
+高亮修复：``_is_object_line`` 改为基于当前块是否为对象首行判断（通过记录
+对象起始行集合），使对象类型名高亮生效。
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import (
-    QColor, QTextFormat, QPainter, QFont, QSyntaxHighlighter,
-    QTextCharFormat, QKeySequence, QPalette
+    QColor,
+    QFont,
+    QPainter,
+    QPalette,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
+    QTextFormat,
 )
-from PySide6.QtWidgets import (
-    QPlainTextEdit, QWidget, QTextEdit
-)
+from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
 
 
 class IDFHighlighter(QSyntaxHighlighter):
     """IDF 语法高亮器。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._formats = {}
+        self._formats: dict[str, QTextCharFormat] = {}
+        self._object_lines: set[int] = set()
 
         f = QTextCharFormat()
         f.setForeground(QColor("#56B6C2"))
@@ -47,10 +59,15 @@ class IDFHighlighter(QSyntaxHighlighter):
         f.setFontWeight(QFont.Bold)
         self._formats["terminator"] = f
 
-    def highlightBlock(self, text):
+    def set_object_lines(self, lines: set[int]) -> None:
+        """设置对象起始行号集合（0-based），用于对象类型名高亮。"""
+        self._object_lines = lines
+        self.rehighlight()
+
+    def highlightBlock(self, text: str) -> None:
         if not text:
             return
-
+        block_number = self.currentBlock().blockNumber()
         stripped = text.lstrip()
         leading = len(text) - len(stripped)
 
@@ -59,8 +76,7 @@ class IDFHighlighter(QSyntaxHighlighter):
                 idx = stripped.index("!-")
                 self.setFormat(0, len(text), self._formats["comment"])
                 fn_start = leading + idx + 2
-                self.setFormat(fn_start, len(text) - fn_start,
-                               self._formats["field_name"])
+                self.setFormat(fn_start, len(text) - fn_start, self._formats["field_name"])
             else:
                 self.setFormat(0, len(text), self._formats["comment"])
             return
@@ -73,20 +89,20 @@ class IDFHighlighter(QSyntaxHighlighter):
             code_part = text
             comment_part = ""
 
-        self._highlight_code(code_part, 0)
+        self._highlight_code(code_part, 0, block_number)
 
         if comment_part:
             start = len(code_part)
             if "!-" in comment_part:
                 idx = comment_part.index("!-")
                 self.setFormat(start, idx, self._formats["comment"])
-                self.setFormat(start + idx + 2, len(comment_part) - idx - 2,
-                               self._formats["field_name"])
+                self.setFormat(
+                    start + idx + 2, len(comment_part) - idx - 2, self._formats["field_name"]
+                )
             else:
-                self.setFormat(start, len(comment_part),
-                               self._formats["comment"])
+                self.setFormat(start, len(comment_part), self._formats["comment"])
 
-    def _find_comment_pos(self, text):
+    def _find_comment_pos(self, text: str) -> int:
         in_squote = False
         in_dquote = False
         for i, ch in enumerate(text):
@@ -98,11 +114,10 @@ class IDFHighlighter(QSyntaxHighlighter):
                 return i
         return -1
 
-    def _highlight_code(self, text, offset):
+    def _highlight_code(self, text: str, offset: int, block_number: int) -> None:
         stripped = text.strip()
         if not stripped:
             return
-
         leading = len(text) - len(stripped)
         content_start = offset + leading
 
@@ -118,23 +133,18 @@ class IDFHighlighter(QSyntaxHighlighter):
 
             token = text[:term_pos].strip()
             token_start = content_start
-            token_end = content_start + len(token)
 
-            if self.currentBlock().blockNumber() == 0 or self._is_object_line():
+            if block_number == 0 or block_number in self._object_lines:
                 self.setFormat(token_start, len(token), self._formats["object"])
             else:
                 self._highlight_value(token, token_start)
 
             if term_pos < len(text):
-                self.setFormat(offset + term_pos, 1,
-                               self._formats["terminator"])
+                self.setFormat(offset + term_pos, 1, self._formats["terminator"])
         else:
             self._highlight_value(stripped, content_start)
 
-    def _is_object_line(self):
-        return False
-
-    def _highlight_value(self, token, start):
+    def _highlight_value(self, token: str, start: int) -> None:
         token = token.strip()
         if not token:
             return
@@ -156,21 +166,21 @@ class IDFHighlighter(QSyntaxHighlighter):
 class LineNumberArea(QWidget):
     """行号区域。"""
 
-    def __init__(self, editor):
+    def __init__(self, editor: IDFEditor) -> None:
         super().__init__(editor)
         self._editor = editor
 
-    def sizeHint(self):
+    def sizeHint(self) -> QSize:
         return QSize(self._editor.line_number_width(), 0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:
         self._editor.paint_line_numbers(event)
 
 
 class IDFEditor(QPlainTextEdit):
     """IDF 文本编辑器，带行号和语法高亮。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setLineWrapMode(QPlainTextEdit.NoWrap)
         font = QFont("Monospace")
@@ -188,31 +198,33 @@ class IDFEditor(QPlainTextEdit):
         self._update_line_width(0)
         self._highlight_current_line()
 
-    def line_number_width(self):
-        digits = max(1, len(str(self.blockCount())))
-        space = 3 + self.fontMetrics().horizontalAdvance("9") * digits
-        return space
+    def set_object_lines(self, lines: set[int]) -> None:
+        """设置对象起始行号集合（0-based）。"""
+        self._highlighter.set_object_lines(lines)
 
-    def _update_line_width(self, _):
+    def line_number_width(self) -> int:
+        digits = max(1, len(str(self.blockCount())))
+        return 3 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def _update_line_width(self, _: int) -> None:
         self.setViewportMargins(self.line_number_width(), 0, 0, 0)
 
-    def _update_line_area(self, rect, dy):
+    def _update_line_area(self, rect, dy: int) -> None:
         if dy:
             self._line_area.scroll(0, dy)
         else:
-            self._line_area.update(0, rect.y(),
-                                   self._line_area.width(), rect.height())
+            self._line_area.update(0, rect.y(), self._line_area.width(), rect.height())
         if rect.width() > self.viewport().width():
             self._update_line_width(0)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         cr = self.contentsRect()
-        self._line_area.setGeometry(QRect(cr.left(), cr.top(),
-                                          self.line_number_width(),
-                                          cr.height()))
+        self._line_area.setGeometry(
+            QRect(cr.left(), cr.top(), self.line_number_width(), cr.height())
+        )
 
-    def paint_line_numbers(self, event):
+    def paint_line_numbers(self, event) -> None:
         painter = QPainter(self._line_area)
         painter.fillRect(event.rect(), self._line_area.palette().color(QPalette.Window))
 
@@ -235,15 +247,20 @@ class IDFEditor(QPlainTextEdit):
                 else:
                     painter.setFont(font)
                     painter.setPen(QColor("#7F848E"))
-                painter.drawText(0, top, self._line_area.width() - 2,
-                                 self.fontMetrics().height(),
-                                 Qt.AlignRight, number)
+                painter.drawText(
+                    0,
+                    top,
+                    self._line_area.width() - 2,
+                    self.fontMetrics().height(),
+                    Qt.AlignRight,
+                    number,
+                )
             block = block.next()
             top = bottom
             bottom = top + round(self.blockBoundingRect(block).height())
             block_number += 1
 
-    def _highlight_current_line(self):
+    def _highlight_current_line(self) -> None:
         selections = []
         selection = QTextEdit.ExtraSelection()
         selection.format.setBackground(QColor("#3E4451"))
@@ -253,7 +270,7 @@ class IDFEditor(QPlainTextEdit):
         selections.append(selection)
         self.setExtraSelections(selections)
 
-    def jump_to_line(self, line):
+    def jump_to_line(self, line: int) -> None:
         block = self.document().findBlockByNumber(line - 1)
         if block.isValid():
             cursor = self.textCursor()
@@ -261,8 +278,8 @@ class IDFEditor(QPlainTextEdit):
             self.setTextCursor(cursor)
             self.centerCursor()
 
-    def find_text(self, text):
-        from PySide6.QtGui import QTextCursor
+    def find_text(self, text: str) -> bool:
+        """查找文本，找到返回 True。"""
         cursor = self.textCursor()
         search_cursor = self.document().find(text, cursor)
         if search_cursor.isNull():

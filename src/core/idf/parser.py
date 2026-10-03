@@ -1,73 +1,50 @@
-"""EnergyPlus IDF 文件解析器。
+"""IDF 文件解析器。
 
-IDF 文件格式：
-    Object,
-        field1,        !- Field Name 1
-        field2;        !- Field Name 2
-
-采用逐字符扫描方法，正确处理引号、括号、注释。
+逐字符扫描，正确处理单/双引号字符串、``$`` 宏变量、行尾 ``!-`` 字段名注释、
+嵌套括号、``!`` 行注释、逗号/分号终止符。解析记录每个对象的行号范围用于错误
+定位与跳转。依据 R-2。
 """
+
+from __future__ import annotations
+
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
+from src.core.exceptions import IDFParseError
+from src.core.idf.models import IDFDocument, IDFObject
 
-@dataclass
-class IDFObject:
-    """IDF 对象。"""
-    type_name: str
-    fields: List[str] = field(default_factory=list)
-    field_names: List[str] = field(default_factory=list)
-    comments: List[str] = field(default_factory=list)
-    line_start: int = 0
-    line_end: int = 0
-    raw_text: str = ""
-
-    def get_field(self, index):
-        if 0 <= index < len(self.fields):
-            return self.fields[index]
-        return ""
-
-    def set_field(self, index, value):
-        while len(self.fields) <= index:
-            self.fields.append("")
-            self.field_names.append("")
-        self.fields[index] = value
-
-
-@dataclass
-class IDFDocument:
-    """IDF 文档。"""
-    objects: List[IDFObject] = field(default_factory=list)
-    header_comments: List[str] = field(default_factory=list)
-    raw_text: str = ""
-    source_path: str = ""
-
-    def get_objects_by_type(self, type_name):
-        tn_lower = type_name.lower()
-        return [o for o in self.objects if o.type_name.lower() == tn_lower]
-
-    def get_object_types(self):
-        seen = []
-        for o in self.objects:
-            if o.type_name not in seen:
-                seen.append(o.type_name)
-        return seen
+_FIELD_NAME_RE = re.compile(r"!\-\s*(.+?)\s*$")
 
 
 class IDFParser:
-    """IDF 文件解析器。"""
+    """IDF 文件解析器（纯逻辑，无 I/O 副作用除 parse_file 外）。"""
 
-    FIELD_NAME_RE = re.compile(r"!\-\s*(.+?)\s*$")
+    def parse_file(self, path: str | Path) -> IDFDocument:
+        """解析文件，返回 IDFDocument。
 
-    def parse_file(self, path) -> IDFDocument:
-        path = Path(path)
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        return self.parse_text(text, str(path))
+        Args:
+            path: IDF 文件路径。
 
-    def parse_text(self, text, source_path="") -> IDFDocument:
+        Raises:
+            IDFParseError: 文件无法读取或解析失败。
+        """
+        p = Path(path)
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            raise IDFParseError(0, f"无法读取文件 {p}: {e}") from e
+        return self.parse_text(text, str(p))
+
+    def parse_text(self, text: str, source_path: str = "") -> IDFDocument:
+        """解析文本，返回 IDFDocument。
+
+        Args:
+            text: IDF 文本内容。
+            source_path: 来源路径（仅记录，不读取）。
+
+        Raises:
+            IDFParseError: 解析失败。
+        """
         doc = IDFDocument(raw_text=text, source_path=source_path)
         lines = text.splitlines()
         n = len(lines)
@@ -91,19 +68,20 @@ class IDFParser:
                 i += 1
                 continue
             obj, i = self._parse_object(lines, i)
-            if obj:
+            if obj is not None:
                 doc.objects.append(obj)
         return doc
 
-    def _parse_object(self, lines, start_idx):
+    def _parse_object(self, lines: list[str], start_idx: int) -> tuple[IDFObject | None, int]:
+        """从 start_idx 解析一个对象，返回 (对象, 下一行索引)。"""
         n = len(lines)
-        type_name = None
-        fields = []
-        field_names = []
-        comments = []
-        raw_lines = []
+        type_name: str | None = None
+        fields: list[str] = []
+        field_names: list[str] = []
+        comments: list[str] = []
+        raw_lines: list[str] = []
 
-        current_token = []
+        current_token: list[str] = []
         in_squote = False
         in_dquote = False
         depth = 0
@@ -114,8 +92,8 @@ class IDFParser:
             line = lines[i]
             raw_lines.append(line)
             j = 0
-            L = len(line)
-            while j < L:
+            length = len(line)
+            while j < length:
                 ch = line[j]
                 if in_squote:
                     current_token.append(ch)
@@ -141,10 +119,10 @@ class IDFParser:
                     continue
                 if ch == "!":
                     cmt = line[j:]
-                    m = self.FIELD_NAME_RE.match(cmt)
+                    m = _FIELD_NAME_RE.match(cmt)
                     if m and fields:
                         field_names[len(fields) - 1] = m.group(1).strip()
-                    j = L
+                    j = length
                     break
                 if ch == "(":
                     depth += 1
@@ -178,7 +156,7 @@ class IDFParser:
                     current_token = []
                     obj_finished = True
                     j += 1
-                    break
+                    continue
                 current_token.append(ch)
                 j += 1
             i += 1
@@ -198,36 +176,6 @@ class IDFParser:
             comments=comments,
             line_start=start_idx + 1,
             line_end=i,
-            raw_text="\n".join(raw_lines),
+            raw_lines=raw_lines,
         )
         return obj, i
-
-    def serialize(self, doc: IDFDocument) -> str:
-        """将文档序列化为 IDF 文本。"""
-        lines = []
-        for c in doc.header_comments:
-            lines.append(c)
-        if doc.header_comments:
-            lines.append("")
-        for obj in doc.objects:
-            lines.append(self._serialize_object(obj))
-            lines.append("")
-        return "\n".join(lines)
-
-    def _serialize_object(self, obj: IDFObject) -> str:
-        lines = [f"{obj.type_name},"]
-        n_fields = len(obj.fields)
-        if n_fields == 0:
-            lines[-1] = f"{obj.type_name};"
-            return "\n".join(lines)
-        for idx, val in enumerate(obj.fields):
-            fname = obj.field_names[idx] if idx < len(obj.field_names) else ""
-            terminator = ";" if idx == n_fields - 1 else ","
-            if fname:
-                lines.append(f"    {val:<24}{terminator}  !- {fname}")
-            else:
-                lines.append(f"    {val}{terminator}")
-        return "\n".join(lines)
-
-
-parser = IDFParser()

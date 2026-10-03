@@ -165,7 +165,7 @@ UI 组件通过构造函数接收所需服务，**不得**在 UI 内部 `from ..
 ```python
 @dataclass(slots=True, frozen=True)
 class ErrorRecord:
-    severity: str          # "Warning" | "Severe" | "Fatal" | "Info"
+    severity: str  # "Warning" | "Severe" | "Fatal" | "Info"
     message: str
     line_in_idf: int | None
     object_name: str | None

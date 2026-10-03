@@ -1,0 +1,5 @@
+pytest>=7.4
+pytest-qt
+pytest-cov
+ruff
+mypy

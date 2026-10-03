@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "energyplus-launcher"
+version = "0.1.0"
+description = "Linux 桌面端 EnergyPlus 图形化启动工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "华为云码道(CodeArts)" }]
+dependencies = [
+    "PySide6>=6.4.0",
+]
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+]
+
+[project.scripts]
+energyplus-launcher = "energyplus_launcher.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: 端到端测试（真跑 EnergyPlus，默认跳过）",
+]
+testpaths = ["tests"]
+qt_api = "pyside6"
