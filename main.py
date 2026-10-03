@@ -23,10 +23,12 @@ def main() -> int:
 
     container = Application()
     container.apply_theme()
+    container.load_idd()
     window = MainWindow(
         run_manager=container.run_manager,
         idf_service=container.idf_service,
         config_service=container.config_service,
+        idd_service=container.idd_service,
     )
     window.show()
     return app.exec()

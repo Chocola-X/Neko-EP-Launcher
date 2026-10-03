@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from src.core.idf.models import IDFDocument, IDFObject
 from src.services.config_service import ConfigService
+from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
 from src.services.run_manager import RunManager
 from src.ui.editor.idf_editor import IDFEditor
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         run_manager: RunManager,
         idf_service: IDFService,
         config_service: ConfigService,
+        idd_service: IDDService | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EnergyPlus 启动器")
@@ -59,6 +61,7 @@ class MainWindow(QMainWindow):
         self._run_manager = run_manager
         self._idf_service = idf_service
         self._config = config_service
+        self._idd_service = idd_service
 
         self._doc: IDFDocument | None = None
         self._current_path: str = ""
@@ -130,7 +133,7 @@ class MainWindow(QMainWindow):
 
         left_splitter = QSplitter(Qt.Vertical)
         self._tree = IDFObjectTree()
-        self._field_panel = FieldEditPanel()
+        self._field_panel = FieldEditPanel(self._idd_service)
         left_splitter.addWidget(self._tree)
         left_splitter.addWidget(self._field_panel)
         left_splitter.setSizes([400, 300])
@@ -254,6 +257,7 @@ class MainWindow(QMainWindow):
         self._current_path = ""
         self._modified = False
         self._tree.set_document(self._doc)
+        self._field_panel.set_document(self._doc)
         self._field_panel.set_object(None)
         self._update_editor_highlight()
         self._update_title()
@@ -279,6 +283,7 @@ class MainWindow(QMainWindow):
         self._modified = False
         self._editor.setPlainText(self._doc.raw_text)
         self._tree.set_document(self._doc)
+        self._field_panel.set_document(self._doc)
         self._field_panel.set_object(None)
         self._update_editor_highlight()
         self._run_panel.set_idf(path)
@@ -334,6 +339,7 @@ class MainWindow(QMainWindow):
         try:
             self._doc = self._idf_service.parse(text, path)
             self._tree.set_document(self._doc)
+            self._field_panel.set_document(self._doc)
             self._update_editor_highlight()
         except Exception:
             pass
@@ -389,6 +395,7 @@ class MainWindow(QMainWindow):
         try:
             self._doc = self._idf_service.parse(text, self._current_path)
             self._tree.set_document(self._doc)
+            self._field_panel.set_document(self._doc)
             self._update_editor_highlight()
             self._status_obj.setText(f"对象: {self._doc.object_count()}")
             QMessageBox.information(

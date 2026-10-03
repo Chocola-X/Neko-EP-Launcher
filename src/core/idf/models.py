@@ -82,3 +82,24 @@ class IDFDocument:
     def object_count(self) -> int:
         """返回对象总数。"""
         return len(self.objects)
+
+
+@dataclass(slots=True, frozen=True)
+class ValidationIssue:
+    """校验问题。
+
+    Attributes:
+        severity: 严重级别（error/warning）。
+        message: 描述。
+        object_type: 对象类型名。
+        object_name: 对象名称字段。
+        field_index: 字段索引（0-based，-1 表示对象级）。
+        field_name: 字段名。
+    """
+
+    severity: str
+    message: str
+    object_type: str = ""
+    object_name: str = ""
+    field_index: int = -1
+    field_name: str = ""

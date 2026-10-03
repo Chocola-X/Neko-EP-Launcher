@@ -9,7 +9,8 @@ import logging
 from pathlib import Path
 
 from src.core.exceptions import IDFParseError
-from src.core.idf.models import IDFDocument, IDFObject
+from src.core.idd.models import FieldDef, IDDDocument
+from src.core.idf.models import IDFDocument, IDFObject, ValidationIssue
 from src.core.idf.parser import IDFParser
 from src.core.idf.serializer import IDFSerializer
 
@@ -91,3 +92,156 @@ class IDFService:
             p.write_text(text, encoding="utf-8")
         except OSError as e:
             raise IDFParseError(0, f"无法保存文件: {e}") from e
+
+    def validate(self, doc: IDFDocument, idd: IDDDocument | None) -> list[ValidationIssue]:
+        """校验 IDF 文档，返回问题列表。
+
+        检查：必填缺失、类型不匹配、引用对象不存在。依据 R-2。
+
+        Args:
+            doc: IDF 文档。
+            idd: IDD 文档（None 时仅做基础检查）。
+        """
+        issues: list[ValidationIssue] = []
+        ref_index = self._build_reference_index(doc, idd)
+        for obj in doc.objects:
+            obj_def = idd.get(obj.type_name) if idd else None
+            name = obj.name()
+            for i, val in enumerate(obj.fields):
+                fdef = obj_def.fields[i] if obj_def and i < len(obj_def.fields) else None
+                fname = fdef.name if fdef else ""
+                stripped = val.strip()
+                if fdef and fdef.required and not stripped:
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            message=f"必填字段 '{fname}' 为空",
+                            object_type=obj.type_name,
+                            object_name=name,
+                            field_index=i,
+                            field_name=fname,
+                        )
+                    )
+                if fdef and stripped:
+                    self._check_type(issues, obj, name, i, fname, stripped, fdef)
+                    self._check_reference(issues, obj, name, i, fname, stripped, fdef, ref_index)
+        return issues
+
+    def _check_type(
+        self,
+        issues: list[ValidationIssue],
+        obj: IDFObject,
+        name: str,
+        i: int,
+        fname: str,
+        val: str,
+        fdef: FieldDef,
+    ) -> None:
+        if fdef.type in ("real", "integer"):
+            low = val.lower()
+            if fdef.autosizable and low == "autosize":
+                return
+            if fdef.autocalculatable and low == "autocalculate":
+                return
+            try:
+                num = float(val)
+            except ValueError:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        message=f"字段 '{fname}' 期望数值，实际为 '{val}'",
+                        object_type=obj.type_name,
+                        object_name=name,
+                        field_index=i,
+                        field_name=fname,
+                    )
+                )
+                return
+            if fdef.minimum is not None and num < fdef.minimum:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        message=f"字段 '{fname}'={num} 小于最小值 {fdef.minimum}",
+                        object_type=obj.type_name,
+                        object_name=name,
+                        field_index=i,
+                        field_name=fname,
+                    )
+                )
+            if fdef.maximum is not None and num > fdef.maximum:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        message=f"字段 '{fname}'={num} 大于最大值 {fdef.maximum}",
+                        object_type=obj.type_name,
+                        object_name=name,
+                        field_index=i,
+                        field_name=fname,
+                    )
+                )
+        elif fdef.type == "choice" and fdef.key_choices:
+            unquoted = val.strip("\"'")
+            if unquoted not in fdef.key_choices:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        message=f"字段 '{fname}' 值 '{unquoted}' 不在选项中",
+                        object_type=obj.type_name,
+                        object_name=name,
+                        field_index=i,
+                        field_name=fname,
+                    )
+                )
+
+    def _check_reference(
+        self,
+        issues: list[ValidationIssue],
+        obj: IDFObject,
+        name: str,
+        i: int,
+        fname: str,
+        val: str,
+        fdef: FieldDef,
+        ref_index: dict[str, set[str]],
+    ) -> None:
+        if fdef.object_lists:
+            unquoted = val.strip("\"'")
+            if not unquoted:
+                return
+            found = False
+            for lst in fdef.object_lists:
+                if unquoted in ref_index.get(lst, set()):
+                    found = True
+                    break
+            if not found:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        message=f"字段 '{fname}' 引用 '{unquoted}' 未找到对应对象",
+                        object_type=obj.type_name,
+                        object_name=name,
+                        field_index=i,
+                        field_name=fname,
+                    )
+                )
+
+    @staticmethod
+    def _build_reference_index(doc: IDFDocument, idd: IDDDocument | None) -> dict[str, set[str]]:
+        """构建引用索引：object-list 名 → 提供该引用的对象名称集合。"""
+        index: dict[str, set[str]] = {}
+        if idd is None:
+            return index
+        for obj in doc.objects:
+            obj_def = idd.get(obj.type_name)
+            if obj_def is None:
+                continue
+            for i, val in enumerate(obj.fields):
+                if not val.strip():
+                    continue
+                fdef = obj_def.fields[i] if i < len(obj_def.fields) else None
+                if fdef is None:
+                    continue
+                unquoted = val.strip("\"'")
+                for ref in fdef.references:
+                    index.setdefault(ref, set()).add(unquoted)
+        return index

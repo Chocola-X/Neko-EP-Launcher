@@ -14,6 +14,7 @@ from src.core.idf.serializer import IDFSerializer
 from src.persistence.config_store import ConfigStore
 from src.services.config_service import ConfigService
 from src.services.ep_runner import EPRunner
+from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
 from src.services.run_manager import RunManager
 
@@ -23,6 +24,8 @@ APP_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = APP_DIR / "data"
 RUNS_DIR = DATA_DIR / "runs"
 CONFIG_FILE = APP_DIR / "config.json"
+RESOURCES_DIR = APP_DIR / "resources"
+IDD_CACHE = RESOURCES_DIR / "idd_cache.json"
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -63,8 +66,18 @@ class Application:
         self.config_store = ConfigStore(config_path)
         self.config_service = ConfigService(self.config_store)
         self.idf_service = IDFService(IDFParser(), IDFSerializer())
+        self.idd_service = IDDService(IDD_CACHE)
         self.ep_runner = EPRunner()
         self.run_manager = RunManager(self.ep_runner, runs_dir)
+
+    def load_idd(self) -> None:
+        """根据配置加载 IDD（启动时调用）。"""
+        idd_path = self.config_service.get_idd_path()
+        if idd_path:
+            try:
+                self.idd_service.load(idd_path)
+            except Exception as e:
+                logger.warning("加载 IDD 失败: %s", e)
 
     def apply_theme(self) -> None:
         """根据配置应用主题。"""
