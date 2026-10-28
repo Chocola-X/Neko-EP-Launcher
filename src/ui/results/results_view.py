@@ -71,6 +71,7 @@ class ErrorView(QWidget):
 
     def set_errors(self, errors: list[ErrorRecord]) -> None:
         """设置错误记录。"""
+        self._detail.clear()
         self._table.setRowCount(0)
         for err in errors:
             row = self._table.rowCount()
@@ -118,7 +119,7 @@ class SummaryView(QWidget):
 
     def set_tables(self, tables: list[ReportTable]) -> None:
         """设置表格数据。"""
-        self._report_list.clear()
+        self.clear()
         self._tables = tables
         for t in tables:
             label = f"{t.table_name} ({t.report_for})"
@@ -188,7 +189,7 @@ class TimeseriesView(QWidget):
 
     def set_variables(self, variables: list[VariableInfo]) -> None:
         """设置可用变量列表。"""
-        self._var_list.clear()
+        self.clear()
         for v in variables:
             label = f"{v.variable_name} [{v.units}]" if v.units else v.variable_name
             item = QListWidgetItem(label)
@@ -265,7 +266,7 @@ class RawFilesView(QWidget):
             files: (文件名, 大小字节) 列表。
             run_dir: 运行目录路径。
         """
-        self._file_tree.clear()
+        self.clear()
         self._run_dir = run_dir
         for name, size in files:
             size_str = f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
@@ -315,7 +316,13 @@ class ResultsView(QWidget):
 
         self._report_button = QPushButton("导出增强 HTML 报告…")
         self._report_button.clicked.connect(self._export_report)
+        self._report_button.setEnabled(False)
         layout.addWidget(self._report_button)
+        self._status = QLabel("尚未加载结果。完成一次模拟或通过“文件 → 打开结果目录”加载。")
+        self._status.setWordWrap(True)
+        self._status.setTextFormat(Qt.PlainText)
+        self._status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self._status)
         self._report_job: BackgroundTask | None = None
         self._tabs = QTabWidget()
 
@@ -380,7 +387,9 @@ class ResultsView(QWidget):
 
     def load_from_run_dir(self, run_dir: str | Path) -> None:
         """从运行目录加载所有结果。"""
+        self.clear()
         self._run_dir = str(run_dir)
+        self._status.setText(f"正在加载：{self._run_dir}")
         errors = self._service.load_errors(run_dir)
         self._error_view.set_errors(errors)
 
@@ -398,13 +407,28 @@ class ResultsView(QWidget):
 
         files = self._service.list_output_files(run_dir)
         self._raw_view.set_files(files, self._run_dir)
+        self._report_button.setEnabled(self._report_job is None)
+        details = f"结果目录：{self._run_dir}；{len(tables)} 张汇总表，{len(files)} 个文件。"
+        if sql_reader is None:
+            details += " 未生成 SQLite：下次运行请勾选“生成分析数据”；已有 HTML 汇总仍可查看。"
+        self._status.setText(details)
 
-        if errors:
+        if any(error.severity in ("Severe", "Fatal") for error in errors):
             self._tabs.setCurrentWidget(self._error_view)
         elif tables:
             self._tabs.setCurrentWidget(self._summary_view)
+        elif sql_reader is not None:
+            self._tabs.setCurrentWidget(self._timeseries_plot)
+        elif errors:
+            self._tabs.setCurrentWidget(self._error_view)
+        else:
+            self._tabs.setCurrentWidget(self._raw_view)
 
     def clear(self) -> None:
+        """清空当前目录和旧数据，避免连续运行混入上次结果。"""
+        self._run_dir = ""
+        self._report_button.setEnabled(False)
+        self._status.setText("尚未加载结果。完成一次模拟或通过“文件 → 打开结果目录”加载。")
         self._error_view.clear()
         self._summary_view.clear()
         self._timeseries_plot.clear()

@@ -22,8 +22,6 @@ from PySide6.QtWidgets import (
 )
 
 from src.persistence.run_repository import RunRecord, RunRepository
-from src.services.results_service import ResultsService
-from src.ui.results.results_view import ResultsView
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +38,10 @@ class HistoryView(QWidget):
     def __init__(
         self,
         repository: RunRepository,
-        results_service: ResultsService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._repository = repository
-        self._results_service = results_service
         self._records: list[RunRecord] = []
         self._build_ui()
 
@@ -79,9 +75,6 @@ class HistoryView(QWidget):
         self._table.doubleClicked.connect(self._on_double_clicked)
         layout.addWidget(self._table, 1)
 
-        self._results_view = ResultsView(self._results_service)
-        layout.addWidget(self._results_view, 2)
-
     def refresh(self) -> None:
         """刷新历史列表。"""
         self._refresh()
@@ -113,4 +106,3 @@ class HistoryView(QWidget):
             return
         rec = self._records[row]
         self.openRunRequested.emit(rec.run_dir)
-        self._results_view.load_from_run_dir(rec.run_dir)

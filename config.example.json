@@ -6,5 +6,6 @@
   "theme": "system",
   "recent_files": [],
   "run_options": "-r",
-  "enhanced_report": false
+  "enhanced_report": false,
+  "analysis_outputs": true
 }

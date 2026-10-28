@@ -19,6 +19,7 @@ def test_app_config_defaults() -> None:
     assert cfg.theme == "system"
     assert cfg.recent_files == []
     assert cfg.run_options == "-r"
+    assert cfg.analysis_outputs
 
 
 def test_add_recent_file_dedup_and_limit() -> None:
@@ -54,6 +55,12 @@ def test_app_config_from_dict_missing_fields() -> None:
     cfg = AppConfig.from_dict({})
     assert cfg.energyplus_path == ""
     assert cfg.theme == "system"
+    assert cfg.analysis_outputs
+
+
+def test_analysis_outputs_can_be_disabled() -> None:
+    cfg = AppConfig(analysis_outputs=False)
+    assert not AppConfig.from_dict(cfg.to_dict()).analysis_outputs
 
 
 def test_exceptions_hierarchy() -> None:

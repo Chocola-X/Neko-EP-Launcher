@@ -21,6 +21,8 @@ class AppConfig:
         theme: 主题名（system/light/dark/fusion）。
         recent_files: 最近打开的文件列表（最多 10 条）。
         run_options: 附加运行参数。
+        enhanced_report: 运行后自动生成增强 HTML 报告。
+        analysis_outputs: 在运行副本中启用 SQLite 与汇总输出。
     """
 
     energyplus_path: str = ""
@@ -31,6 +33,7 @@ class AppConfig:
     recent_files: list[str] = field(default_factory=list)
     run_options: str = "-r"
     enhanced_report: bool = False
+    analysis_outputs: bool = True
 
     def add_recent_file(self, path: str) -> None:
         """添加最近文件到列表头部，去重，最多保留 10 条。"""
@@ -50,6 +53,7 @@ class AppConfig:
             "recent_files": list(self.recent_files),
             "run_options": self.run_options,
             "enhanced_report": self.enhanced_report,
+            "analysis_outputs": self.analysis_outputs,
         }
 
     @classmethod
@@ -66,4 +70,5 @@ class AppConfig:
             recent_files=recent_files,
             run_options=str(data.get("run_options", "-r")),
             enhanced_report=data.get("enhanced_report", False) is True,
+            analysis_outputs=data.get("analysis_outputs", True) is True,
         )

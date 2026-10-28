@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from src.core.results.err_parser import ErrParser
+from src.core.results.html_table_parser import HTMLTableParser
 from src.core.results.models import ErrorRecord, ReportTable, RunStatus, VariableInfo
 from src.core.results.rdd_parser import RDDParser
 from src.core.results.sql_reader import SQLReader
@@ -77,7 +78,7 @@ class ResultsService:
         if not xml_path.exists():
             reader = self.open_sql_reader(run_dir)
             if reader is None:
-                return []
+                return self._load_html_tables(run_dir)
             try:
                 groups: dict[tuple[str, str, str], ReportTable] = {}
                 records = reader.get_tabular_summary()
@@ -98,13 +99,35 @@ class ResultsService:
                     table.cells[table.rows.index(record["row"])][
                         table.columns.index(record["column"])
                     ] = value
-                return list(groups.values())
+                return list(groups.values()) or self._load_html_tables(run_dir)
             finally:
                 reader.close()
         try:
             return self._table_parser.parse_file(xml_path)
         except Exception as e:
             logger.warning("解析 eplustbl.xml 失败: %s", e)
+            return []
+
+    def _load_html_tables(self, run_dir: str | Path) -> list[ReportTable]:
+        """没有 XML/SQL 时读取原始 HTML，跳过启动器生成的增强报告。"""
+        directory = Path(run_dir)
+        candidates = sorted(
+            {
+                *directory.glob("*tbl.htm"),
+                *directory.glob("*Table.htm"),
+                *directory.glob("*-table.htm"),
+                *directory.glob("*tbl.html"),
+            }
+        )
+        if len(candidates) > 1:
+            raise ValueError("目录包含多个 HTML 汇总报告，请选择单次运行目录")
+        if not candidates:
+            return []
+        try:
+            text = candidates[0].read_text(encoding="utf-8", errors="replace")
+            return HTMLTableParser.parse_text(text)
+        except OSError as exc:
+            logger.warning("读取 HTML 汇总失败: %s", exc)
             return []
 
     def load_rdd_variables(self, run_dir: str | Path) -> list[VariableInfo]:
@@ -189,6 +212,9 @@ class ResultsService:
         if standard.is_file():
             return standard
         matches = sorted(directory.glob("*" + extension))
+        if extension == ".err":
+            # 依据 R-4：SQLite 另有独立诊断文件，自定义前缀时也不能与模拟诊断混淆。
+            matches = [path for path in matches if not path.name.casefold().endswith("sqlite.err")]
         if len(matches) > 1:
             raise ValueError(f"目录包含多个 {extension} 文件，请选择单次运行目录")
         return matches[0] if matches else standard

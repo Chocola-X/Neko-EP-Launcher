@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from src.core.idf.models import IDFDocument, IDFObject
 from src.persistence.run_repository import RunRepository
 from src.services.config_service import ConfigService
+from src.services.ep_runner import RunResult
 from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
 from src.services.results_service import ResultsService
@@ -185,7 +186,7 @@ class MainWindow(QMainWindow):
         run_dock = QDockWidget("运行配置与日志", self)
         self._run_dock = run_dock
         run_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-        self._run_panel = RunPanel(self._run_manager, self._config, self._results_service)
+        self._run_panel = RunPanel(self._run_manager, self._config)
         run_dock.setWidget(self._run_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, run_dock)
         run_dock.hide()
@@ -200,7 +201,8 @@ class MainWindow(QMainWindow):
         if self._run_repository is not None:
             history_dock = QDockWidget("运行历史", self)
             history_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-            self._history_view = HistoryView(self._run_repository, self._results_service)
+            self._history_view = HistoryView(self._run_repository)
+            self._history_view.openRunRequested.connect(self._load_results)
             history_dock.setWidget(self._history_view)
             self.addDockWidget(Qt.BottomDockWidgetArea, history_dock)
             history_dock.hide()
@@ -217,7 +219,8 @@ class MainWindow(QMainWindow):
         self._run_panel.runRequested.connect(self._run_current)
         self._editor.textChanged.connect(self._on_text_changed)
         self._results_workspace.outputRequested.connect(self._add_output)
-        self._run_panel.outputRequested.connect(self._add_output)
+        self._run_panel.runFinished.connect(self._on_run_finished)
+        self._run_panel.reportRequested.connect(self._generate_run_report)
 
         self._refresh_recent()
 
@@ -606,11 +609,30 @@ class MainWindow(QMainWindow):
         """直接分析已有 EnergyPlus 输出目录。"""
         directory = QFileDialog.getExistingDirectory(self, "打开 EnergyPlus 结果目录")
         if directory:
-            try:
-                self._results_workspace.load_from_run_dir(directory)
-                self._editor_tabs.setCurrentWidget(self._results_workspace)
-            except Exception as exc:
-                QMessageBox.warning(self, "结果加载失败", str(exc))
+            self._load_results(directory)
+
+    def _load_results(self, directory: str) -> None:
+        """运行完成、历史与手动打开共用主工作区。"""
+        self._editor_tabs.setCurrentWidget(self._results_workspace)
+        try:
+            self._results_workspace.load_from_run_dir(directory)
+        except Exception as exc:
+            logger.exception("加载结果失败: %s", directory)
+            QMessageBox.warning(self, "结果加载失败", str(exc))
+
+    def _on_run_finished(self, result: RunResult) -> None:
+        self._load_results(result.run_dir)
+        if self._history_view is not None:
+            self._history_view.refresh()
+
+    def _generate_run_report(self, directory: str) -> None:
+        try:
+            self._results_workspace.generate_report(
+                directory, str(Path(directory) / "enhanced-report.html")
+            )
+        except Exception as exc:
+            logger.exception("启动报告生成失败")
+            QMessageBox.warning(self, "报告生成失败", str(exc))
 
     def _add_output(self, name: str, is_meter: bool) -> None:
         """把结果字典中的选择插入当前模型。"""

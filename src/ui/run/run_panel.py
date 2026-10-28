@@ -1,4 +1,4 @@
-"""运行面板：配置运行参数、显示实时输出、查看结果文件。
+"""运行面板：配置运行参数、显示实时输出。
 
 通过构造注入 ``ConfigService`` 与 ``RunManager``，禁止依赖全局单例。
 """
@@ -23,16 +23,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QStyle,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from src.services.config_service import ConfigService
 from src.services.ep_runner import EPRunner, RunResult
-from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager, RunRequest
-from src.ui.results.results_view import ResultsView
 
 logger = logging.getLogger(__name__)
 
@@ -42,24 +39,24 @@ class RunPanel(QWidget):
 
     Signals:
         runFinished(object): 运行完成，载荷为 RunResult。
+        reportRequested(str): 请求主工作区生成报告，载荷为运行目录。
     """
 
     runRequested = Signal()
     idfSelected = Signal(str)
     runFinished = Signal(object)
-    outputRequested = Signal(str, bool)
+    reportRequested = Signal(str)
 
     def __init__(
         self,
         run_manager: RunManager,
         config_service: ConfigService,
-        results_service: ResultsService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._run_manager = run_manager
         self._config = config_service
-        self._results_service = results_service or ResultsService()
+        self._report_for_run = False
         self._idf_path = ""
         self._build_ui()
         self._connect_signals()
@@ -102,9 +99,14 @@ class RunPanel(QWidget):
         self._extra_args.setPlaceholderText("例如: -r -p")
         config_layout.addRow("附加参数:", self._extra_args)
 
+        self._analysis_outputs = QCheckBox("生成分析数据（仅在运行副本中启用 SQLite 与汇总）")
+        self._analysis_outputs.setChecked(self._config.config.analysis_outputs)
+        self._analysis_outputs.setToolTip("保留模型已有输出变量与汇总请求，不修改原始 IDF。")
+        config_layout.addRow(self._analysis_outputs)
+
         self._enhanced_report = QCheckBox("运行结束后生成增强 HTML 报告（离线图表与汇总）")
         self._enhanced_report.setChecked(self._config.config.enhanced_report)
-        self._enhanced_report.setToolTip("建议先在编辑菜单配置可视化输出并添加时序变量。")
+        self._enhanced_report.setToolTip("时序图需要分析数据与模型中的输出变量请求。")
         config_layout.addRow(self._enhanced_report)
         layout.addWidget(config_group)
 
@@ -125,23 +127,14 @@ class RunPanel(QWidget):
         self._status = QLabel("就绪")
         layout.addWidget(self._status)
 
-        tabs = QTabWidget()
+        layout.addWidget(QLabel("运行日志"))
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         font = QFont("Monospace")
         font.setStyleHint(QFont.Monospace)
         font.setPointSize(10)
         self._log.setFont(font)
-        tabs.addTab(self._log, "运行日志")
-
-        result_tab = self._build_result_tab()
-        tabs.addTab(result_tab, "结果")
-        layout.addWidget(tabs, 1)
-
-    def _build_result_tab(self) -> QWidget:
-        view = ResultsView(self._results_service)
-        view.outputRequested.connect(self.outputRequested)
-        return view
+        layout.addWidget(self._log, 1)
 
     def _connect_signals(self) -> None:
         self._run_manager.lineOutput.connect(self._append_log)
@@ -168,6 +161,7 @@ class RunPanel(QWidget):
         run_id = self._run_id.text().strip()
         extra = self._extra_args.text().strip()
         self._config.config.enhanced_report = self._enhanced_report.isChecked()
+        self._config.config.analysis_outputs = self._analysis_outputs.isChecked()
         self._config.save()
         self._report_for_run = self._enhanced_report.isChecked()
         self._log.clear()
@@ -176,6 +170,7 @@ class RunPanel(QWidget):
             weather_path=wf,
             run_id=run_id,
             extra_args=extra,
+            analysis_outputs=self._analysis_outputs.isChecked(),
         )
         result = self._run_manager.start(ep_exe, request)
         return result is not None
@@ -249,14 +244,9 @@ class RunPanel(QWidget):
             self._status.setText("就绪")
 
     def _on_finished(self, result: RunResult) -> None:
-        self._populate_results(result)
         self.runFinished.emit(result)
-        if getattr(self, "_report_for_run", False):
-            view = self._find_result_widget()
-            if view is not None:
-                view.generate_report(
-                    result.run_dir, str(Path(result.run_dir) / "enhanced-report.html")
-                )
+        if self._report_for_run:
+            self.reportRequested.emit(result.run_dir)
         if result.success:
             QMessageBox.information(
                 self,
@@ -272,17 +262,3 @@ class RunPanel(QWidget):
 
     def _on_error(self, msg: str) -> None:
         self._append_log(f"[错误] {msg}")
-
-    def _populate_results(self, result: RunResult) -> None:
-        run_dir = Path(result.run_dir)
-        if not run_dir.exists():
-            return
-        result_widget = self._find_result_widget()
-        if result_widget is not None:
-            result_widget.load_from_run_dir(run_dir)
-
-    def _find_result_widget(self) -> ResultsView | None:
-        """查找结果视图 widget。"""
-        for child in self.findChildren(ResultsView):
-            return child
-        return None

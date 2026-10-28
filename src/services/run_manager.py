@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, Signal
 
 from src.core.entities.run_options import RunOptions
 from src.services.ep_runner import EPRunner, RunResult
+from src.services.idf_service import IDFService
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class RunRequest:
         run_id: 运行标识（空则用时间戳）。
         extra_args: 附加命令行参数。
         options: 结构化运行选项（优先于 extra_args）。
+        analysis_outputs: 在运行副本中启用 SQLite 与汇总输出。
     """
 
     idf_path: str
@@ -39,6 +41,7 @@ class RunRequest:
     run_id: str = ""
     extra_args: str = ""
     options: RunOptions | None = None
+    analysis_outputs: bool = False
 
 
 class RunManager(QObject):
@@ -111,6 +114,16 @@ class RunManager(QObject):
 
         idf_dest = run_dir / idf_path.name
         shutil.copy2(idf_path, idf_dest)
+        if request.analysis_outputs:
+            try:
+                service = IDFService()
+                document = service.open(idf_dest)
+                service.configure_outputs(document)
+                service.save(document, idf_dest)
+            except Exception as exc:
+                logger.exception("配置运行副本分析输出失败")
+                self.error.emit(f"配置分析输出失败: {exc}")
+                return None
 
         weather_filename = ""
         if request.weather_path and Path(request.weather_path).exists():

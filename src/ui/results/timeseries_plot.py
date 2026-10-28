@@ -114,7 +114,15 @@ class TimeseriesPlotView(QWidget):
                 item.setData(Qt.UserRole, var)
                 self._var_list.addItem(item)
             self._filter(self._search.text())
-            self._info_label.setText(f"{self._var_list.count()} 个变量；Ctrl / Shift 多选")
+            self._info_label.setText(
+                f"{self._var_list.count()} 个变量；Ctrl / Shift 多选"
+                if self._var_list.count()
+                else "SQL 中没有时序变量；请添加 Output:Variable / Output:Meter 后重新运行。"
+            )
+            for index in range(self._var_list.count()):
+                if not self._var_list.item(index).isHidden():
+                    self._var_list.setCurrentRow(index)
+                    break
         except Exception as exc:
             self._period.blockSignals(False)
             self._info_label.setText(f"SQL 加载失败: {exc}")
