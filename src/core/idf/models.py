@@ -31,6 +31,12 @@ class IDFObject:
     line_end: int = 0
     raw_lines: list[str] = field(default_factory=list)
 
+    source_start: int = -1
+    source_end: int = -1
+    field_spans: list[tuple[int, int]] = field(default_factory=list)
+    original_type: str = ""
+    original_fields: tuple[str, ...] = ()
+
     def get_field(self, index: int) -> str:
         """安全取字段值，越界返回空串。"""
         if 0 <= index < len(self.fields):
@@ -65,6 +71,8 @@ class IDFDocument:
     header_comments: list[str] = field(default_factory=list)
     raw_text: str = ""
     source_path: str = ""
+
+    source_spans: list[tuple[int, int]] = field(default_factory=list)
 
     def get_objects_by_type(self, type_name: str) -> list[IDFObject]:
         """按类型名查询对象（大小写不敏感）。"""

@@ -1,0 +1,10 @@
+{
+  "energyplus_path": "",
+  "weather_dir": "",
+  "last_idf_dir": "",
+  "last_weather_file": "",
+  "theme": "system",
+  "recent_files": [],
+  "run_options": "-r",
+  "enhanced_report": false
+}

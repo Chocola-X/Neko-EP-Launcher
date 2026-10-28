@@ -78,6 +78,18 @@ class ObjectDef:
     fields: list[FieldDef] = field(default_factory=list)
     extensible_size: int = 0
 
+    def get_field(self, index: int) -> FieldDef | None:
+        """返回字段定义，重复字段组按可扩展组映射。依据 R-10。"""
+        if 0 <= index < len(self.fields):
+            return self.fields[index]
+        if self.extensible_size and self.fields and index >= len(self.fields):
+            start = next(
+                (i for i, f in enumerate(self.fields) if f.begin_extensible),
+                len(self.fields) - self.extensible_size,
+            )
+            return self.fields[start + (index - start) % self.extensible_size]
+        return None
+
     def field_count(self) -> int:
         """返回字段数。"""
         return len(self.fields)

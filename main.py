@@ -19,7 +19,6 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("EnergyPlus Launcher")
     app.setOrganizationName("EnergyPlusLauncher")
-    app.setStyle("Fusion")
 
     container = Application()
     container.apply_theme()

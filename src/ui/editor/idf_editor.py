@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt
+from PySide6.QtCore import QEvent, QRect, QSize, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QTextCursor,
     QTextFormat,
 )
-from PySide6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QTextEdit, QWidget
 
 
 class IDFHighlighter(QSyntaxHighlighter):
@@ -55,9 +55,26 @@ class IDFHighlighter(QSyntaxHighlighter):
         self._formats["string"] = f
 
         f = QTextCharFormat()
-        f.setForeground(QColor("#FFFFFF"))
+        f.setForeground(QApplication.palette().color(QPalette.Text))
         f.setFontWeight(QFont.Bold)
         self._formats["terminator"] = f
+        self.set_text_color(QApplication.palette().color(QPalette.Text))
+
+    def set_text_color(self, color: QColor) -> None:
+        """让分隔符颜色随系统调色板更新。"""
+        light = color.lightness() < 128
+        colors = {
+            "object": "#005a9c" if light else "#56b6c2",
+            "value": "#21633e" if light else "#98c379",
+            "number": "#8a4b08" if light else "#e5c07b",
+            "comment": "#626970" if light else "#9ba4ae",
+            "field_name": "#77409a" if light else "#c678dd",
+            "string": "#ad2540" if light else "#e06c75",
+        }
+        for name, value in colors.items():
+            self._formats[name].setForeground(QColor(value))
+        self._formats["terminator"].setForeground(color)
+        self.rehighlight()
 
     def set_object_lines(self, lines: set[int]) -> None:
         """设置对象起始行号集合（0-based），用于对象类型名高亮。"""
@@ -204,25 +221,38 @@ class IDFEditor(QPlainTextEdit):
 
     def line_number_width(self) -> int:
         digits = max(1, len(str(self.blockCount())))
-        return 3 + self.fontMetrics().horizontalAdvance("9") * digits
+        return 8 + self.fontMetrics().horizontalAdvance("9") * digits
 
     def _update_line_width(self, _: int) -> None:
-        self.setViewportMargins(self.line_number_width(), 0, 0, 0)
+        self.setViewportMargins(self.line_number_width() + 4, 0, 0, 0)
+        self._sync_line_area_geometry()
 
-    def _update_line_area(self, rect, dy: int) -> None:
+    def _sync_line_area_geometry(self) -> None:
+        """行号栏与正文等高，底部独立留给水平滚动条。"""
+        viewport = self.viewport().geometry()
+        self._line_area.setGeometry(
+            QRect(
+                self.contentsRect().left(),
+                viewport.top(),
+                self.line_number_width(),
+                viewport.height(),
+            )
+        )
+        self._line_area.update()
+
+    def _update_line_area(self, rect: QRect, dy: int) -> None:
         if dy:
             self._line_area.scroll(0, dy)
         else:
             self._line_area.update(0, rect.y(), self._line_area.width(), rect.height())
-        if rect.width() > self.viewport().width():
+        if rect.contains(self.viewport().rect()):
             self._update_line_width(0)
+        else:
+            self._sync_line_area_geometry()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        cr = self.contentsRect()
-        self._line_area.setGeometry(
-            QRect(cr.left(), cr.top(), self.line_number_width(), cr.height())
-        )
+        self._sync_line_area_geometry()
 
     def paint_line_numbers(self, event) -> None:
         painter = QPainter(self._line_area)
@@ -263,12 +293,26 @@ class IDFEditor(QPlainTextEdit):
     def _highlight_current_line(self) -> None:
         selections = []
         selection = QTextEdit.ExtraSelection()
-        selection.format.setBackground(QColor("#3E4451"))
+        color = self.palette().color(QPalette.Highlight)
+        color.setAlpha(35)
+        selection.format.setBackground(color)
         selection.format.setProperty(QTextFormat.FullWidthSelection, True)
         selection.cursor = self.textCursor()
         selection.cursor.clearSelection()
         selections.append(selection)
         self.setExtraSelections(selections)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.FontChange,
+            QEvent.StyleChange,
+            QEvent.LayoutDirectionChange,
+        ) and hasattr(self, "_line_area"):
+            self._update_line_width(0)
+        if event.type() == QEvent.PaletteChange and hasattr(self, "_highlighter"):
+            self._highlighter.set_text_color(self.palette().color(QPalette.Text))
+            self._highlight_current_line()
 
     def jump_to_line(self, line: int) -> None:
         block = self.document().findBlockByNumber(line - 1)

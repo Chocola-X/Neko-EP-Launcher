@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QStandardItem, QStandardItemModel
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -54,12 +54,28 @@ class IDFObjectTree(QWidget):
 
         self._model = QStandardItemModel()
         self._tree.setModel(self._model)
-        self._tree.clicked.connect(self._on_clicked)
+        self._tree.selectionModel().currentChanged.connect(
+            lambda current, previous: self._on_clicked(current)
+        )
         self._tree.doubleClicked.connect(self._on_double_clicked)
 
     def set_document(self, doc: IDFDocument | None) -> None:
         self._doc = doc
         self._refresh()
+
+    def update_document(self, doc: IDFDocument) -> None:
+        """字段提交后替换模型引用与名称，保留树索引、展开状态及点击目标。"""
+        self._doc = doc
+        for i in range(self._model.rowCount()):
+            parent = self._model.item(i)
+            for j in range(parent.rowCount()):
+                child = parent.child(j)
+                index = child.data(Qt.UserRole + 1)
+                if 0 <= index < len(doc.objects):
+                    obj = doc.objects[index]
+                    child.setData(obj, Qt.UserRole)
+                    child.setText(obj.name() or f"#{index + 1}")
+        self._filter(self._search.text())
 
     def _refresh(self) -> None:
         self._model.clear()
@@ -77,7 +93,6 @@ class IDFObjectTree(QWidget):
             font = type_item.font()
             font.setBold(True)
             type_item.setFont(font)
-            type_item.setForeground(QColor("#56B6C2"))
             root.appendRow(type_item)
             for idx, obj in items:
                 name = obj.name() if obj.fields else ""
@@ -89,6 +104,7 @@ class IDFObjectTree(QWidget):
                 type_item.appendRow(child)
 
         self._tree.expandToDepth(0)
+        self._filter(self._search.text())
 
     def _filter(self, text: str) -> None:
         text = text.strip().lower()
@@ -109,13 +125,13 @@ class IDFObjectTree(QWidget):
 
     def _on_clicked(self, index) -> None:
         item = self._model.itemFromIndex(index)
-        obj = item.data(Qt.UserRole)
+        obj = item.data(Qt.UserRole) if item is not None else None
         if obj is not None:
             self.objectSelected.emit(obj)
 
     def _on_double_clicked(self, index) -> None:
         item = self._model.itemFromIndex(index)
-        obj = item.data(Qt.UserRole)
+        obj = item.data(Qt.UserRole) if item is not None else None
         if obj is not None:
             self.objectActivated.emit(obj)
 
@@ -125,5 +141,7 @@ class IDFObjectTree(QWidget):
             for j in range(parent.rowCount()):
                 child = parent.child(j)
                 if child.data(Qt.UserRole) is obj:
+                    self._tree.selectionModel().blockSignals(True)
                     self._tree.setCurrentIndex(child.index())
+                    self._tree.selectionModel().blockSignals(False)
                     return

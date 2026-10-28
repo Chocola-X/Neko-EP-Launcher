@@ -1,16 +1,52 @@
+# 本地工具与编辑器配置
 .codeartsdoer/
 .codex/
+.agents/
+.aws/
+.idea/
+.vscode/
+
+# Python 环境、缓存与构建产物
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
+venv/
+env/
+.tox/
+.nox/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
-.coverage
-htmlcov/
-data/
-config.json
-resources/idd_cache.json
 *.egg-info/
-build/
-dist/
+/build/
+/dist/
+
+# 测试与覆盖率产物
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+coverage.json
+junit.xml
+
+# 本机配置、模拟运行、生成报告和 IDD 缓存
+/config.json
+/data/
+/resources/idd_cache*.json
+*.log
+*.log.[0-9]*
+.env
+.env.*
+!.env.example
+
+# 外部模拟器与桌面软件安装目录不属于启动器源码
+/EnergyPlus-*/
+/OpenStudio*/
+/EP-Launch-*/
+
+# 系统文件与编辑器临时文件
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

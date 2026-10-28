@@ -30,6 +30,7 @@ class AppConfig:
     theme: str = "system"
     recent_files: list[str] = field(default_factory=list)
     run_options: str = "-r"
+    enhanced_report: bool = False
 
     def add_recent_file(self, path: str) -> None:
         """添加最近文件到列表头部，去重，最多保留 10 条。"""
@@ -48,6 +49,7 @@ class AppConfig:
             "theme": self.theme,
             "recent_files": list(self.recent_files),
             "run_options": self.run_options,
+            "enhanced_report": self.enhanced_report,
         }
 
     @classmethod
@@ -63,4 +65,5 @@ class AppConfig:
             theme=str(data.get("theme", "system")),
             recent_files=recent_files,
             run_options=str(data.get("run_options", "-r")),
+            enhanced_report=data.get("enhanced_report", False) is True,
         )

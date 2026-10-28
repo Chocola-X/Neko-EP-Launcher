@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 from src.core.exceptions import IDFParseError
@@ -107,8 +108,9 @@ class IDFService:
         for obj in doc.objects:
             obj_def = idd.get(obj.type_name) if idd else None
             name = obj.name()
-            for i, val in enumerate(obj.fields):
-                fdef = obj_def.fields[i] if obj_def and i < len(obj_def.fields) else None
+            for i in range(max(len(obj.fields), len(obj_def.fields) if obj_def else 0)):
+                val = obj.get_field(i)
+                fdef = obj_def.get_field(i) if obj_def else None
                 fname = fdef.name if fdef else ""
                 stripped = val.strip()
                 if fdef and fdef.required and not stripped:
@@ -157,6 +159,26 @@ class IDFService:
                     )
                 )
                 return
+            if not math.isfinite(num) or (fdef.type == "integer" and not num.is_integer()):
+                issues.append(
+                    ValidationIssue(
+                        "error",
+                        f"字段 '{fname}' 需要有限的{fdef.type}数值",
+                        obj.type_name,
+                        name,
+                        i,
+                        fname,
+                    )
+                )
+                return
+            if (fdef.minimum_greater is not None and num <= fdef.minimum_greater) or (
+                fdef.maximum_less is not None and num >= fdef.maximum_less
+            ):
+                issues.append(
+                    ValidationIssue(
+                        "error", f"字段 '{fname}' 超出允许的开区间", obj.type_name, name, i, fname
+                    )
+                )
             if fdef.minimum is not None and num < fdef.minimum:
                 issues.append(
                     ValidationIssue(
@@ -210,7 +232,7 @@ class IDFService:
                 return
             found = False
             for lst in fdef.object_lists:
-                if unquoted in ref_index.get(lst, set()):
+                if unquoted.casefold() in {v.casefold() for v in ref_index.get(lst, set())}:
                     found = True
                     break
             if not found:
@@ -245,3 +267,52 @@ class IDFService:
                 for ref in fdef.references:
                     index.setdefault(ref, set()).add(unquoted)
         return index
+
+    def configure_outputs(self, doc: IDFDocument) -> None:
+        """启用 SQLite/汇总及 IDF 变量字典，保留已有汇总请求。依据 R-2。"""
+        for name, fields in [
+            ("Output:SQLite", ["SimpleAndTabular"]),
+            ("Output:VariableDictionary", ["IDF", "Name"]),
+            ("Output:Table:SummaryReports", ["AllSummary"]),
+        ]:
+            objects = doc.get_objects_by_type(name)
+            if not objects:
+                doc.objects.append(IDFObject(name, fields))
+            elif name in ("Output:SQLite", "Output:VariableDictionary"):
+                objects[0].set_field(0, fields[0])
+
+    def add_output(
+        self, doc: IDFDocument, name: str, is_meter: bool, frequency: str = "Hourly"
+    ) -> bool:
+        """添加输出请求并避免重复，返回是否新增。依据 R-2/R-4e。"""
+        type_name = "Output:Meter" if is_meter else "Output:Variable"
+        fields = [name, frequency] if is_meter else ["*", name, frequency]
+        if any(
+            [v.casefold() for v in obj.fields[: len(fields)]] == [v.casefold() for v in fields]
+            for obj in doc.get_objects_by_type(type_name)
+        ):
+            return False
+        doc.objects.append(IDFObject(type_name, fields))
+        return True
+
+    def update_field(
+        self, doc: IDFDocument, object_index: int, field_index: int, value: str
+    ) -> None:
+        """更新指定字段，复杂文本自动加引号，避免破坏 IDF 分隔符。"""
+        if field_index < 0:
+            raise ValueError("字段索引不可为负")
+        if any(c in value for c in ",;!\n") and not (value.startswith('"') and value.endswith('"')):
+            if '"' in value:
+                raise ValueError("含分隔符的字段请使用完整的引号字符串")
+            value = f'"{value}"'
+        doc.objects[object_index].set_field(field_index, value)
+
+    def resize_fields(self, doc: IDFDocument, object_index: int, append: bool) -> None:
+        """增减末尾字段，避免中间字段移位改变含义。"""
+        obj = doc.objects[object_index]
+        if append:
+            obj.set_field(len(obj.fields), "")
+        elif obj.fields:
+            obj.fields.pop()
+            obj.field_names = obj.field_names[: len(obj.fields)]
+            obj.comments = obj.comments[: len(obj.fields)]

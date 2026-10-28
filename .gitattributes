@@ -1,0 +1,2 @@
+# 保留官方 IDF 样本的末尾空行，用于原文保真回归。
+tests/fixtures/*.idf whitespace=-blank-at-eof

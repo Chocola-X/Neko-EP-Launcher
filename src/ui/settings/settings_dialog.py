@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.services.config_service import ConfigService
+from src.ui.theme import apply_theme
 
 
 class SettingsDialog(QDialog):
@@ -60,8 +61,14 @@ class SettingsDialog(QDialog):
         group = QGroupBox("外观")
         g_layout = QFormLayout(group)
         self._theme = QComboBox()
-        self._theme.addItems(["system", "light", "dark", "fusion"])
-        self._theme.setCurrentText(self._config.config.theme)
+        for title, value in [
+            ("跟随系统（原生外观）", "system"),
+            ("浅色", "light"),
+            ("深色", "dark"),
+            ("Fusion", "fusion"),
+        ]:
+            self._theme.addItem(title, value)
+        self._theme.setCurrentIndex(max(0, self._theme.findData(self._config.config.theme)))
         g_layout.addRow("主题:", self._theme)
         layout.addWidget(group)
         layout.addStretch()
@@ -192,9 +199,10 @@ class SettingsDialog(QDialog):
         self._config.config.energyplus_path = self._ep_path.text().strip()
         self._config.config.weather_dir = self._weather_dir.text().strip()
         self._config.config.last_weather_file = self._weather_file.text().strip()
-        self._config.config.theme = self._theme.currentText()
+        self._config.config.theme = self._theme.currentData()
         self._config.config.run_options = self._run_options.text().strip()
         self._config.save()
+        apply_theme(self._config.config.theme)
 
     def _on_accept(self) -> None:
         self._apply()

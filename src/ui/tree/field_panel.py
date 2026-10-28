@@ -7,14 +7,20 @@ real/integer→带校验输入框，显示单位/默认/必填标记，非法值
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QCompleter,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,8 +41,8 @@ class FieldEditPanel(QWidget):
         objectChanged(object): 对象变更。
     """
 
-    fieldChanged = Signal(object, int, str)
-    objectChanged = Signal(object)
+    fieldEditRequested = Signal(int, str)
+    structureEditRequested = Signal(bool)
 
     def __init__(
         self,
@@ -65,7 +71,7 @@ class FieldEditPanel(QWidget):
         info_group = QGroupBox("对象信息")
         info_layout = QFormLayout(info_group)
         self._type_label = QLabel("-")
-        self._type_label.setStyleSheet("font-weight: bold; color: #56B6C2;")
+        self._type_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._name_label = QLabel("-")
         self._line_label = QLabel("-")
         info_layout.addRow("类型:", self._type_label)
@@ -73,22 +79,29 @@ class FieldEditPanel(QWidget):
         info_layout.addRow("行号:", self._line_label)
         layout.addWidget(info_group)
 
-        table_group = QGroupBox("字段")
+        self._hint = QLabel("请在左侧选择对象，然后直接在“值”栏输入。")
+        self._hint.setWordWrap(True)
+        layout.addWidget(self._hint)
+        table_group = QGroupBox("属性（Enter 或离开输入框后提交）")
         table_layout = QVBoxLayout(table_group)
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["#", "字段名", "值", "单位/说明"])
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Interactive)
+        self._table.setColumnWidth(1, 230)
+        self._table.setColumnWidth(3, 180)
+        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.verticalHeader().setDefaultSectionSize(34)
         self._table.verticalHeader().setVisible(False)
         self._table.itemChanged.connect(self._on_item_changed)
         table_layout.addWidget(self._table)
         layout.addWidget(table_group, 1)
 
         btn_layout = QHBoxLayout()
-        self._btn_add = QPushButton("添加字段")
-        self._btn_del = QPushButton("删除字段")
+        self._btn_add = QPushButton("＋ 添加末尾字段")
+        self._btn_del = QPushButton("－ 删除末尾字段")
         self._btn_add.clicked.connect(self._add_field)
         self._btn_del.clicked.connect(self._del_field)
         btn_layout.addWidget(self._btn_add)
@@ -114,17 +127,22 @@ class FieldEditPanel(QWidget):
         self._name_label.setText(obj.name() if obj.fields else "-")
         self._line_label.setText(f"{obj.line_start} - {obj.line_end}")
 
-        self._table.setRowCount(len(obj.fields))
-        for i, val in enumerate(obj.fields):
-            fdef = (
-                self._obj_def.fields[i] if self._obj_def and i < len(self._obj_def.fields) else None
-            )
+        self._hint.setText(
+            "直接修改值，按 Enter 或切换字段提交；Ctrl+S 保存到文件。"
+            if self._obj_def
+            else "当前未加载 IDD：仍可编辑字段值；在设置中配置 EnergyPlus 可显示字段定义。"
+        )
+        count = max(len(obj.fields), min(30, len(self._obj_def.fields)) if self._obj_def else 0)
+        self._table.setRowCount(count)
+        for i in range(count):
+            val = obj.get_field(i)
+            fdef = self._obj_def.get_field(i) if self._obj_def else None
             fname = obj.field_names[i] if i < len(obj.field_names) else ""
             self._fill_row(i, val, fname, fdef)
         self._table.blockSignals(False)
 
     def _fill_row(self, row: int, value: str, name: str, fdef: FieldDef | None) -> None:
-        display_name = fdef.name if fdef and fdef.name else name
+        display_name = (fdef.name if fdef and fdef.name else name) or f"字段 {row + 1}"
         required_mark = " *" if fdef and fdef.required else ""
         idx_item = QTableWidgetItem(str(row + 1))
         idx_item.setFlags(Qt.ItemIsEnabled)
@@ -140,6 +158,38 @@ class FieldEditPanel(QWidget):
         val_item = QTableWidgetItem(value)
         self._table.setItem(row, 2, val_item)
         self._validate_cell(row, value, fdef)
+        editor = None
+        if fdef and (fdef.key_choices or fdef.object_lists):
+            combo = QComboBox()
+            combo.setEditable(True)
+            choices = list(fdef.key_choices)
+            if fdef.object_lists and self._doc and self._idd:
+                for candidate in self._doc.objects:
+                    definition = self._idd.get_object_def(candidate.type_name)
+                    if definition:
+                        for i, field in enumerate(definition.fields):
+                            if set(field.references) & set(fdef.object_lists):
+                                choices.append(candidate.get_field(i))
+            combo.addItems(["", *sorted(set(choices))])
+            combo.setCurrentText(value)
+            combo.completer().setFilterMode(Qt.MatchContains)
+            combo.completer().setCompletionMode(QCompleter.PopupCompletion)
+            combo.lineEdit().editingFinished.connect(lambda r=row: self._commit_row(r))
+            combo.activated.connect(lambda index, r=row: self._commit_row(r))
+            self._table.setCellWidget(row, 2, combo)
+            editor = combo
+        else:
+            edit = QLineEdit(value)
+            edit.setPlaceholderText(fdef.default if fdef and fdef.default else "输入值…")
+            edit.setClearButtonEnabled(True)
+            edit.editingFinished.connect(lambda r=row: self._commit_row(r))
+            self._table.setCellWidget(row, 2, edit)
+            editor = edit
+        editor.setAccessibleName(display_name or f"字段 {row + 1}")
+        editor.setToolTip(fdef.note if fdef else "修改后按 Enter 提交")
+        if item_tip := val_item.toolTip():
+            editor.setToolTip(item_tip)
+        self._update_editor_validation(row)
 
         unit_text = ""
         if fdef:
@@ -153,7 +203,6 @@ class FieldEditPanel(QWidget):
             unit_text = " ".join(parts)
         unit_item = QTableWidgetItem(unit_text)
         unit_item.setFlags(Qt.ItemIsEnabled)
-        unit_item.setForeground(QColor("#7F848E"))
         self._table.setItem(row, 3, unit_item)
 
     def _validate_cell(self, row: int, value: str, fdef: FieldDef | None) -> None:
@@ -164,60 +213,106 @@ class FieldEditPanel(QWidget):
             if fdef and fdef.required:
                 item.setForeground(QColor("#E06C75"))
             else:
-                item.setForeground(QColor("#ABB2BF"))
+                item.setForeground(self.palette().color(QPalette.Text))
             return
         if fdef and fdef.type in ("real", "integer"):
+            if (fdef.autosizable and value.casefold() == "autosize") or (
+                fdef.autocalculatable and value.casefold() == "autocalculate"
+            ):
+                item.setForeground(QColor("#98C379"))
+                return
             try:
                 num = float(value)
             except ValueError:
                 item.setForeground(QColor("#E06C75"))
+                return
+            if not math.isfinite(num) or (fdef.type == "integer" and not num.is_integer()):
+                item.setForeground(QColor("#E06C75"))
+                item.setToolTip("需要有限的数值；整数字段不可含小数")
+                return
+            if (fdef.minimum_greater is not None and num <= fdef.minimum_greater) or (
+                fdef.maximum_less is not None and num >= fdef.maximum_less
+            ):
+                item.setForeground(QColor("#E06C75"))
+                item.setToolTip("超出允许的开区间")
                 return
             if (fdef.minimum is not None and num < fdef.minimum) or (
                 fdef.maximum is not None and num > fdef.maximum
             ):
                 item.setForeground(QColor("#E5C07B"))
             else:
-                item.setForeground(QColor("#ABB2BF"))
+                item.setForeground(self.palette().color(QPalette.Text))
             return
-        item.setForeground(QColor("#ABB2BF"))
+        item.setForeground(self.palette().color(QPalette.Text))
+
+    def _update_editor_validation(self, row: int) -> None:
+        editor = self._table.cellWidget(row, 2)
+        item = self._table.item(row, 2)
+        if editor is None or item is None:
+            return
+        color = item.foreground().color()
+        if color in (QColor("#E06C75"), QColor("#E5C07B")):
+            palette = QPalette()
+            palette.setColor(
+                QPalette.Text,
+                QColor("#ba1a1a")
+                if self.palette().color(QPalette.Base).lightness() > 128
+                else QColor("#ffb4ab"),
+            )
+            editor.setPalette(palette)
+            editor.setToolTip(
+                item.toolTip() or "字段值不符合类型、范围或必填要求，请修正后校验模型。"
+            )
+        else:
+            editor.setPalette(QPalette())
+
+    def rebind_object(self, obj: IDFObject | None) -> None:
+        """解析后更新只读对象引用，保留正在使用的输入框和焦点。"""
+        self._obj = obj
+        if obj is not None:
+            self._name_label.setText(obj.name())
+            self._line_label.setText(f"{obj.line_start} - {obj.line_end}")
+            for row in range(self._table.rowCount()):
+                editor = self._table.cellWidget(row, 2)
+                value = obj.get_field(row)
+                if isinstance(editor, QLineEdit) and editor.text() != value:
+                    editor.setText(value)
+                elif isinstance(editor, QComboBox) and editor.currentText() != value:
+                    editor.setCurrentText(value)
+
+    def commit_pending(self) -> None:
+        """保存或运行前提交当前输入框，支持键盘快捷键保存。"""
+        for row in range(self._table.rowCount()):
+            editor = self._table.cellWidget(row, 2)
+            if editor and (
+                editor.hasFocus()
+                or (isinstance(editor, QComboBox) and editor.lineEdit().hasFocus())
+            ):
+                self._commit_row(row)
+                return
+
+    def _commit_row(self, row: int) -> None:
+        if self._obj is None or not self.isEnabled():
+            return
+        editor = self._table.cellWidget(row, 2)
+        value = editor.currentText() if isinstance(editor, QComboBox) else editor.text()
+        if value == self._obj.get_field(row):
+            return
+        self._table.blockSignals(True)
+        self._table.item(row, 2).setText(value)
+        self._validate_cell(row, value, self._obj_def.get_field(row) if self._obj_def else None)
+        self._table.blockSignals(False)
+        self._update_editor_validation(row)
+        self.fieldEditRequested.emit(row, value)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if self._obj is None or item.column() != 2:
-            return
-        row = item.row()
-        new_val = item.text()
-        if row < len(self._obj.fields):
-            self._obj.fields[row] = new_val
-            fdef = (
-                self._obj_def.fields[row]
-                if self._obj_def and row < len(self._obj_def.fields)
-                else None
-            )
-            self._validate_cell(row, new_val, fdef)
-            self.fieldChanged.emit(self._obj, row, new_val)
-            self.objectChanged.emit(self._obj)
-            if row == 0:
-                self._name_label.setText(new_val)
+        if self._obj is not None and item.column() == 2:
+            self.fieldEditRequested.emit(item.row(), item.text())
 
     def _add_field(self) -> None:
-        if self._obj is None:
-            return
-        self._obj.fields.append("")
-        self._obj.field_names.append("")
-        self._obj.comments.append("")
-        self.set_object(self._obj)
-        self.objectChanged.emit(self._obj)
+        if self._obj is not None:
+            self.structureEditRequested.emit(True)
 
     def _del_field(self) -> None:
-        if self._obj is None:
-            return
-        row = self._table.currentRow()
-        if row < 0 or row >= len(self._obj.fields):
-            return
-        del self._obj.fields[row]
-        if row < len(self._obj.field_names):
-            del self._obj.field_names[row]
-        if row < len(self._obj.comments):
-            del self._obj.comments[row]
-        self.set_object(self._obj)
-        self.objectChanged.emit(self._obj)
+        if self._obj is not None:
+            self.structureEditRequested.emit(False)

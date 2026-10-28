@@ -45,6 +45,10 @@ class SummaryPlotView(QWidget):
         self._chart_type = QComboBox()
         self._chart_type.addItems(["柱状图", "饼图"])
         self._chart_type.currentTextChanged.connect(self._refresh_plot)
+        self._column = QComboBox()
+        self._column.currentIndexChanged.connect(self._refresh_plot)
+        toolbar.addWidget(QLabel("数据列:"))
+        toolbar.addWidget(self._column)
         self._btn_export = QPushButton("导出 PNG...")
         self._btn_export.clicked.connect(self._export_png)
         toolbar.addWidget(QLabel("图表类型:"))
@@ -73,12 +77,17 @@ class SummaryPlotView(QWidget):
         for t in tables:
             if not t.columns or not t.rows:
                 continue
-            label = f"{t.table_name}"
+            label = f"{t.report_name} / {t.table_name} ({t.report_for})"
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, t)
             self._table_list.addItem(item)
 
     def _on_table_changed(self, current: QListWidgetItem, _: QListWidgetItem) -> None:
+        self._column.blockSignals(True)
+        self._column.clear()
+        if current is not None:
+            self._column.addItems(current.data(Qt.UserRole).columns)
+        self._column.blockSignals(False)
         self._refresh_plot()
 
     def _refresh_plot(self) -> None:
@@ -93,7 +102,7 @@ class SummaryPlotView(QWidget):
             self._canvas.draw()
             return
 
-        numeric_data = self._extract_numeric_data(table)
+        numeric_data = self._extract_numeric_data(table, max(0, self._column.currentIndex()))
         if not numeric_data:
             self._canvas.draw()
             return
@@ -108,7 +117,7 @@ class SummaryPlotView(QWidget):
             ax.bar(range(len(labels)), values)
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-            ax.set_ylabel("值")
+            ax.set_ylabel(self._column.currentText())
         else:
             positive_vals = [v for v in values if v > 0]
             positive_labels = [labels[i] for i, v in enumerate(values) if v > 0]
@@ -121,13 +130,13 @@ class SummaryPlotView(QWidget):
         self._canvas.draw()
 
     @staticmethod
-    def _extract_numeric_data(table: ReportTable) -> list[tuple[str, float]]:
+    def _extract_numeric_data(table: ReportTable, column: int = 0) -> list[tuple[str, float]]:
         """从表格中提取数值数据（行名 + 第一列数值）。"""
         result: list[tuple[str, float]] = []
         for i, row_name in enumerate(table.rows):
             if i >= len(table.cells):
                 continue
-            for cell in table.cells[i]:
+            for cell in table.cells[i][column : column + 1]:
                 val_str = cell.strip()
                 if "[" in val_str:
                     val_str = val_str.split("[")[0].strip()

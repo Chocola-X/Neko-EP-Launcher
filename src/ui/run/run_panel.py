@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -42,7 +44,10 @@ class RunPanel(QWidget):
         runFinished(object): 运行完成，载荷为 RunResult。
     """
 
+    runRequested = Signal()
+    idfSelected = Signal(str)
     runFinished = Signal(object)
+    outputRequested = Signal(str, bool)
 
     def __init__(
         self,
@@ -97,21 +102,20 @@ class RunPanel(QWidget):
         self._extra_args.setPlaceholderText("例如: -r -p")
         config_layout.addRow("附加参数:", self._extra_args)
 
+        self._enhanced_report = QCheckBox("运行结束后生成增强 HTML 报告（离线图表与汇总）")
+        self._enhanced_report.setChecked(self._config.config.enhanced_report)
+        self._enhanced_report.setToolTip("建议先在编辑菜单配置可视化输出并添加时序变量。")
+        config_layout.addRow(self._enhanced_report)
         layout.addWidget(config_group)
 
         btn_row = QHBoxLayout()
         self._btn_run = QPushButton("运行")
-        self._btn_run.setStyleSheet(
-            "QPushButton { background-color: #98C379; color: black; "
-            "font-weight: bold; padding: 6px 20px; }"
-            "QPushButton:disabled { background-color: #7F848E; }"
-        )
-        self._btn_cancel = QPushButton("取消")
+        self._btn_run.setText("运行 EnergyPlus（F5）")
+        self._btn_run.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._btn_cancel = QPushButton("停止模拟")
+        self._btn_cancel.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
         self._btn_cancel.setEnabled(False)
-        self._btn_cancel.setStyleSheet(
-            "QPushButton { background-color: #E06C75; color: black; padding: 6px 20px; }"
-        )
-        self._btn_run.clicked.connect(self.start_run)
+        self._btn_run.clicked.connect(self.runRequested)
         self._btn_cancel.clicked.connect(self._run_manager.cancel)
         btn_row.addStretch()
         btn_row.addWidget(self._btn_run)
@@ -119,7 +123,6 @@ class RunPanel(QWidget):
         layout.addLayout(btn_row)
 
         self._status = QLabel("就绪")
-        self._status.setStyleSheet("color: gray;")
         layout.addWidget(self._status)
 
         tabs = QTabWidget()
@@ -136,7 +139,9 @@ class RunPanel(QWidget):
         layout.addWidget(tabs, 1)
 
     def _build_result_tab(self) -> QWidget:
-        return ResultsView(self._results_service)
+        view = ResultsView(self._results_service)
+        view.outputRequested.connect(self.outputRequested)
+        return view
 
     def _connect_signals(self) -> None:
         self._run_manager.lineOutput.connect(self._append_log)
@@ -162,6 +167,9 @@ class RunPanel(QWidget):
             wf = ""
         run_id = self._run_id.text().strip()
         extra = self._extra_args.text().strip()
+        self._config.config.enhanced_report = self._enhanced_report.isChecked()
+        self._config.save()
+        self._report_for_run = self._enhanced_report.isChecked()
         self._log.clear()
         request = RunRequest(
             idf_path=self._idf_path,
@@ -178,7 +186,7 @@ class RunPanel(QWidget):
             self, "选择 IDF 文件", start, "IDF 文件 (*.idf);;所有文件 (*)"
         )
         if path:
-            self.set_idf(path)
+            self.idfSelected.emit(path)
             self._config.config.last_idf_dir = str(Path(path).parent)
             self._config.save()
 
@@ -239,11 +247,16 @@ class RunPanel(QWidget):
             self._status.setStyleSheet("color: #E06C75; font-weight: bold;")
         else:
             self._status.setText("就绪")
-            self._status.setStyleSheet("color: gray;")
 
     def _on_finished(self, result: RunResult) -> None:
         self._populate_results(result)
         self.runFinished.emit(result)
+        if getattr(self, "_report_for_run", False):
+            view = self._find_result_widget()
+            if view is not None:
+                view.generate_report(
+                    result.run_dir, str(Path(result.run_dir) / "enhanced-report.html")
+                )
         if result.success:
             QMessageBox.information(
                 self,

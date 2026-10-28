@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -45,7 +46,7 @@ class IDDService:
             IDDFormatError: 解析失败。
         """
         idd_path = Path(idd_path)
-        cache_key = idd_path.name
+        cache_key = "v2:" + hashlib.sha256(idd_path.read_bytes()).hexdigest()
         if self._cache_path and self._try_load_cache(cache_key):
             logger.info("从缓存加载 IDD: %s", self._cache_path)
             return self._doc  # type: ignore[return-value]
@@ -136,6 +137,8 @@ class IDDService:
                             "type": f.type,
                             "units": f.units,
                             "default": f.default,
+                            "autosizable": f.autosizable,
+                            "autocalculatable": f.autocalculatable,
                             "required": f.required,
                             "key_choices": f.key_choices,
                             "object_lists": f.object_lists,
@@ -182,6 +185,8 @@ class IDDService:
                             type=str(fd.get("type", "alpha")),
                             units=str(fd.get("units", "")),
                             default=str(fd.get("default", "")),
+                            autosizable=bool(fd.get("autosizable", False)),
+                            autocalculatable=bool(fd.get("autocalculatable", False)),
                             required=bool(fd.get("required", False)),
                             key_choices=list(fd.get("key_choices", [])),
                             object_lists=list(fd.get("object_lists", [])),

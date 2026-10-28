@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.core.exceptions import ResultParseError
@@ -34,6 +35,11 @@ class SQLReader:
         self._path = Path(path)
         self._conn: sqlite3.Connection | None = None
 
+    @property
+    def path(self) -> Path:
+        """数据库文件路径，供后台任务创建独立连接。"""
+        return self._path
+
     def __enter__(self) -> SQLReader:
         self.open()
         return self
@@ -48,8 +54,12 @@ class SQLReader:
             ResultParseError: 文件无法打开。
         """
         try:
-            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            self._conn = sqlite3.connect(
+                self._path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False
+            )
             self._conn.row_factory = sqlite3.Row
+            # 旧版输出可能含非 UTF-8 的度数符号，不能因此丢弃整张表。
+            self._conn.text_factory = lambda raw: raw.decode("utf-8", errors="replace")
         except sqlite3.Error as e:
             raise ResultParseError(f"无法打开 sql 文件: {e}") from e
 
@@ -132,6 +142,7 @@ class SQLReader:
         self,
         rdd_index: int,
         env_period_index: int | None = None,
+        include_warmup: bool = False,
     ) -> list[TimeSeriesPoint]:
         """取指定变量的时序数据。
 
@@ -149,6 +160,8 @@ class SQLReader:
         if env_period_index is not None:
             query += " AND t.EnvironmentPeriodIndex = ?"
             params.append(env_period_index)
+        if not include_warmup:
+            query += " AND COALESCE(t.WarmupFlag, 0) = 0"
         query += " ORDER BY rd.TimeIndex"
         cur = self.connection.execute(query, params)
         return [
@@ -175,19 +188,12 @@ class SQLReader:
 
         返回扁平的字典列表，每项含 report/table/row/column/value/units。
         """
+        # 依据 R-4b，官方视图已连接 Strings，避免手工拼接索引列。
         query = """
-            SELECT
-                (SELECT Value FROM Strings WHERE StringsIndex = r.ReportNameIndex) AS ReportName,
-                (SELECT Value FROM Strings WHERE StringsIndex = r.ReportForStringIndex) AS ReportFor,
-                (SELECT Value FROM Strings WHERE StringsIndex = r.TableNameIndex) AS TableName,
-                (SELECT Value FROM Strings WHERE StringsIndex = r.RowNameIndex) AS RowName,
-                (SELECT Value FROM Strings WHERE StringsIndex = r.ColumnNameIndex) AS ColumnName,
-                (SELECT Value FROM Strings WHERE StringsIndex = r.UnitsIndex) AS Units,
-                td.Value
-            FROM TabularData td
-            JOIN TabularData r ON td.TabularDataIndex = r.TabularDataIndex
-            WHERE td.Value IS NOT NULL
-            LIMIT 100
+            SELECT ReportName, ReportForString, TableName, RowName, ColumnName, Units, Value
+            FROM TabularDataWithStrings
+            WHERE Value IS NOT NULL
+            ORDER BY TabularDataIndex
         """
         try:
             cur = self.connection.execute(query)
@@ -205,3 +211,10 @@ class SQLReader:
             ]
         except sqlite3.Error:
             return []
+
+    @staticmethod
+    def timestamp(point: TimeSeriesPoint) -> datetime:
+        """把区间结束时间转为日期，兼容 24 时与 60 分。依据 R-4b。"""
+        return datetime(point.year or 2000, max(1, point.month), max(1, point.day)) + timedelta(
+            hours=max(0, point.hour - 1), minutes=point.minute or 60
+        )

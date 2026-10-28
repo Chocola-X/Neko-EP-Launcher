@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QStatusBar,
+    QStyle,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -35,7 +36,9 @@ from src.services.idd_service import IDDService
 from src.services.idf_service import IDFService
 from src.services.results_service import ResultsService
 from src.services.run_manager import RunManager
+from src.ui.dialogs.validation_dialog import ValidationDialog
 from src.ui.editor.idf_editor import IDFEditor
+from src.ui.results.results_view import ResultsView
 from src.ui.run.history_view import HistoryView
 from src.ui.run.run_panel import RunPanel
 from src.ui.settings.settings_dialog import SettingsDialog
@@ -73,7 +76,13 @@ class MainWindow(QMainWindow):
         self._doc: IDFDocument | None = None
         self._current_path: str = ""
         self._modified = False
+        self._selected_object_index: int | None = None
+        self._sync_baseline = ""
 
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(600)
+        self._sync_timer.timeout.connect(self._auto_sync)
         self._build_ui()
         self._build_actions()
         self._build_menus()
@@ -90,7 +99,7 @@ class MainWindow(QMainWindow):
 
         self._act_open = QAction("打开...", self)
         self._act_open.setShortcut(QKeySequence.Open)
-        self._act_open.triggered.connect(self._open_file)
+        self._act_open.triggered.connect(lambda checked=False: self._open_file())
 
         self._act_save = QAction("保存", self)
         self._act_save.setShortcut(QKeySequence.Save)
@@ -131,6 +140,22 @@ class MainWindow(QMainWindow):
         self._act_sync_tree = QAction("从文本同步到树", self)
         self._act_sync_tree.triggered.connect(self._sync_tree_from_text)
 
+        self._act_validate = QAction("校验 IDF", self)
+        self._act_validate.triggered.connect(self._validate_idf)
+        self._act_results = QAction("打开结果目录...", self)
+        self._act_results.triggered.connect(self._open_results)
+        self._act_outputs = QAction("配置可视化输出", self)
+        self._act_outputs.triggered.connect(self._configure_outputs)
+
+        self._act_run_config = QAction("运行配置与日志", self)
+        self._act_run_config.triggered.connect(self._show_run_config)
+        self._act_properties = QAction("属性编辑", self)
+        self._act_properties.triggered.connect(
+            lambda: self._editor_tabs.setCurrentWidget(self._field_panel)
+        )
+        self._act_source = QAction("IDF 源码", self)
+        self._act_source.triggered.connect(lambda: self._editor_tabs.setCurrentWidget(self._editor))
+
         self._act_history = QAction("运行历史", self)
         self._act_history.triggered.connect(self._show_history)
 
@@ -141,30 +166,29 @@ class MainWindow(QMainWindow):
 
         main_splitter = QSplitter(Qt.Horizontal)
 
-        left_splitter = QSplitter(Qt.Vertical)
         self._tree = IDFObjectTree()
-        self._field_panel = FieldEditPanel(self._idd_service)
-        left_splitter.addWidget(self._tree)
-        left_splitter.addWidget(self._field_panel)
-        left_splitter.setSizes([400, 300])
-        main_splitter.addWidget(left_splitter)
-
+        main_splitter.addWidget(self._tree)
         self._editor_tabs = QTabWidget()
+        self._field_panel = FieldEditPanel(self._idd_service)
+        self._editor_tabs.addTab(self._field_panel, "属性编辑")
         self._editor = IDFEditor()
-        self._editor_tabs.addTab(self._editor, "文本编辑")
+        self._editor_tabs.addTab(self._editor, "IDF 源码")
+        self._results_workspace = ResultsView(self._results_service)
+        self._editor_tabs.addTab(self._results_workspace, "结果分析")
         main_splitter.addWidget(self._editor_tabs)
-        main_splitter.setSizes([400, 1000])
+        main_splitter.setSizes([300, 1100])
+        main_splitter.setStretchFactor(1, 1)
         layout.addWidget(main_splitter)
 
         self.setCentralWidget(central)
 
-        run_dock = QDockWidget("运行面板", self)
+        run_dock = QDockWidget("运行配置与日志", self)
+        self._run_dock = run_dock
         run_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-        self._run_panel = RunPanel(
-            self._run_manager, self._config, self._results_service
-        )
+        self._run_panel = RunPanel(self._run_manager, self._config, self._results_service)
         run_dock.setWidget(self._run_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, run_dock)
+        run_dock.hide()
 
         files_dock = QDockWidget("最近文件", self)
         self._recent_list = QListWidget()
@@ -176,9 +200,7 @@ class MainWindow(QMainWindow):
         if self._run_repository is not None:
             history_dock = QDockWidget("运行历史", self)
             history_dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-            self._history_view = HistoryView(
-                self._run_repository, self._results_service
-            )
+            self._history_view = HistoryView(self._run_repository, self._results_service)
             history_dock.setWidget(self._history_view)
             self.addDockWidget(Qt.BottomDockWidgetArea, history_dock)
             history_dock.hide()
@@ -186,8 +208,16 @@ class MainWindow(QMainWindow):
             self._history_view = None
 
         self._tree.objectSelected.connect(self._on_object_selected)
-        self._field_panel.objectChanged.connect(self._on_object_changed)
+        self._field_panel.fieldEditRequested.connect(self._edit_field)
+        self._field_panel.structureEditRequested.connect(self._resize_fields)
+        self._tree.objectActivated.connect(
+            lambda obj: self._editor_tabs.setCurrentWidget(self._editor)
+        )
+        self._run_panel.idfSelected.connect(self._open_file)
+        self._run_panel.runRequested.connect(self._run_current)
         self._editor.textChanged.connect(self._on_text_changed)
+        self._results_workspace.outputRequested.connect(self._add_output)
+        self._run_panel.outputRequested.connect(self._add_output)
 
         self._refresh_recent()
 
@@ -198,6 +228,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_new)
         file_menu.addAction(self._act_open)
         file_menu.addAction(self._act_open_example)
+        file_menu.addAction(self._act_results)
         file_menu.addSeparator()
         file_menu.addAction(self._act_save)
         file_menu.addAction(self._act_save_as)
@@ -215,9 +246,12 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._act_find)
         edit_menu.addSeparator()
         edit_menu.addAction(self._act_sync_tree)
+        edit_menu.addAction(self._act_validate)
+        edit_menu.addAction(self._act_outputs)
 
         run_menu = mb.addMenu("运行(&R)")
         run_menu.addAction(self._act_run)
+        run_menu.addAction(self._act_run_config)
         run_menu.addAction(self._act_history)
 
         view_menu = mb.addMenu("视图(&V)")
@@ -231,19 +265,35 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self._act_about)
 
     def _build_toolbar(self) -> None:
-        tb = QToolBar("主工具栏")
+        tb = QToolBar("常用操作")
         tb.setMovable(False)
-        tb.addAction(self._act_new)
-        tb.addAction(self._act_open)
-        tb.addAction(self._act_save)
-        tb.addSeparator()
-        tb.addAction(self._act_undo)
-        tb.addAction(self._act_redo)
-        tb.addSeparator()
-        tb.addAction(self._act_run)
-        tb.addSeparator()
-        tb.addAction(self._act_settings)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        actions = [
+            (self._act_open, QStyle.SP_DialogOpenButton, "打开 IDF（Ctrl+O）"),
+            (self._act_save, QStyle.SP_DialogSaveButton, "保存当前 IDF（Ctrl+S）"),
+            (self._act_save_as, QStyle.SP_DialogSaveButton, "另存为新文件"),
+            (self._act_properties, QStyle.SP_FileDialogDetailedView, "切换到属性编辑"),
+            (self._act_source, QStyle.SP_FileIcon, "切换到 IDF 源码编辑"),
+            (self._act_validate, QStyle.SP_DialogApplyButton, "校验当前模型"),
+            (
+                self._act_run_config,
+                QStyle.SP_FileDialogContentsView,
+                "设置天气文件、报告选项并查看日志",
+            ),
+            (self._act_run, QStyle.SP_MediaPlay, "运行当前模型（F5）"),
+            (self._act_results, QStyle.SP_DirOpenIcon, "打开已有结果目录"),
+            (self._act_settings, QStyle.SP_ComputerIcon, "设置 EnergyPlus 路径和系统主题"),
+        ]
+        for action, icon, tip in actions:
+            action.setIcon(self.style().standardIcon(icon))
+            action.setToolTip(tip)
+            tb.addAction(action)
         self.addToolBar(tb)
+
+    def _show_run_config(self) -> None:
+        self._run_dock.show()
+        self._run_dock.raise_()
+        self.resizeDocks([self._run_dock], [330], Qt.Vertical)
 
     def _build_statusbar(self) -> None:
         sb = QStatusBar()
@@ -277,13 +327,21 @@ class MainWindow(QMainWindow):
     def _new_file(self) -> None:
         if not self._confirm_discard():
             return
+        self._sync_baseline = ""
+        self._sync_timer.stop()
         self._editor.clear()
         self._doc = IDFDocument()
         self._current_path = ""
         self._modified = False
         self._tree.set_document(self._doc)
         self._field_panel.set_document(self._doc)
-        self._field_panel.set_object(None)
+        self._selected_object_index = 0 if self._doc.objects else None
+        obj = self._doc.objects[0] if self._doc.objects else None
+        self._field_panel.set_object(obj)
+        if obj:
+            self._tree.select_object(obj)
+        self._editor_tabs.setCurrentWidget(self._field_panel)
+        self._field_panel.setEnabled(True)
         self._update_editor_highlight()
         self._update_title()
         self._update_actions()
@@ -304,12 +362,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"解析文件失败:\n{e}")
             return
+        self._sync_baseline = self._doc.raw_text
         self._current_path = path
         self._modified = False
+        self._editor.blockSignals(True)
         self._editor.setPlainText(self._doc.raw_text)
+        self._editor.blockSignals(False)
+        self._sync_timer.stop()
+        self._field_panel.setEnabled(True)
+        self._status_modified.clear()
         self._tree.set_document(self._doc)
         self._field_panel.set_document(self._doc)
-        self._field_panel.set_object(None)
+        self._selected_object_index = 0 if self._doc.objects else None
+        obj = self._doc.objects[0] if self._doc.objects else None
+        self._field_panel.set_object(obj)
+        if obj:
+            self._tree.select_object(obj)
+        self._editor_tabs.setCurrentWidget(self._field_panel)
+        self._field_panel.setEnabled(True)
         self._update_editor_highlight()
         self._run_panel.set_idf(path)
         self._config.add_recent_file(path)
@@ -340,11 +410,13 @@ class MainWindow(QMainWindow):
             self._open_file(path)
 
     def _save_file(self) -> None:
+        self._field_panel.commit_pending()
         if not self._current_path:
             return self._save_as()
         self._do_save(self._current_path)
 
     def _save_as(self) -> None:
+        self._field_panel.commit_pending()
         start = self._current_path or self._config.config.last_idf_dir or "/"
         path, _ = QFileDialog.getSaveFileName(
             self, "保存 IDF 文件", start, "IDF 文件 (*.idf);;所有文件 (*)"
@@ -356,18 +428,25 @@ class MainWindow(QMainWindow):
         text = self._editor.toPlainText()
         try:
             self._idf_service.save_text(text, path)
-        except OSError as e:
+        except Exception as e:
             QMessageBox.critical(self, "保存失败", str(e))
             return
         self._current_path = path
+        self._run_panel.set_idf(path)
         self._modified = False
+        self._status_modified.clear()
         try:
             self._doc = self._idf_service.parse(text, path)
+            self._sync_baseline = text
             self._tree.set_document(self._doc)
             self._field_panel.set_document(self._doc)
+            if self._selected_object_index is not None and self._selected_object_index < len(
+                self._doc.objects
+            ):
+                self._field_panel.rebind_object(self._doc.objects[self._selected_object_index])
             self._update_editor_highlight()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.statusBar().showMessage(f"文件已保存，但解析失败: {exc}")
         self._config.add_recent_file(path)
         self._config.config.last_idf_dir = str(Path(path).parent)
         self._config.save()
@@ -376,6 +455,7 @@ class MainWindow(QMainWindow):
         self._status_file.setText(path)
 
     def _confirm_discard(self) -> bool:
+        self._field_panel.commit_pending()
         if not self._modified:
             return True
         ret = QMessageBox.question(
@@ -390,37 +470,193 @@ class MainWindow(QMainWindow):
         return ret == QMessageBox.Discard
 
     def _on_text_changed(self) -> None:
+        # 语法高亮也会触发 textChanged，只有原文变化才应禁用属性与启动同步。
+        if self._editor.toPlainText() == self._sync_baseline:
+            if not self._field_panel.isEnabled():
+                self._sync_timer.start(0)
+            return
+        self._sync_timer.start()
+        self._field_panel.setEnabled(False)
         if not self._modified:
             self._modified = True
             self._status_modified.setText("[已修改]")
             self._update_title()
 
     def _on_object_selected(self, obj: IDFObject) -> None:
+        if self._doc is None:
+            return
+        self._selected_object_index = next(
+            (i for i, candidate in enumerate(self._doc.objects) if candidate is obj), None
+        )
         self._field_panel.set_object(obj)
         if obj and obj.line_start:
             self._editor.jump_to_line(obj.line_start)
 
+    def _edit_field(self, field_index: int, value: str) -> None:
+        if self._doc is None or self._selected_object_index is None:
+            return
+        try:
+            self._idf_service.update_field(
+                self._doc, self._selected_object_index, field_index, value
+            )
+            self._on_object_changed(self._doc.objects[self._selected_object_index])
+        except Exception as exc:
+            QMessageBox.warning(self, "属性修改失败", str(exc))
+
+    def _resize_fields(self, append: bool) -> None:
+        if self._doc is None or self._selected_object_index is None:
+            return
+        try:
+            self._field_panel.commit_pending()
+            self._idf_service.resize_fields(self._doc, self._selected_object_index, append)
+            self._on_object_changed(self._doc.objects[self._selected_object_index])
+            self._field_panel.set_object(self._doc.objects[self._selected_object_index])
+        except Exception as exc:
+            QMessageBox.warning(self, "字段修改失败", str(exc))
+
     def _on_object_changed(self, obj: IDFObject) -> None:
         if self._doc is None or obj is None:
             return
+        index = next((i for i, candidate in enumerate(self._doc.objects) if candidate is obj), 0)
         new_text = self._idf_service.serialize(self._doc)
+        doc = self._idf_service.parse(new_text, self._current_path)
         if new_text != self._editor.toPlainText():
             cursor_pos = self._editor.textCursor().position()
-            self._editor.setPlainText(new_text)
-            cursor = self._editor.textCursor()
-            cursor.setPosition(min(cursor_pos, len(new_text)))
-            self._editor.setTextCursor(cursor)
-            self._update_editor_highlight()
+            with QSignalBlocker(self._editor):
+                cursor = self._editor.textCursor()
+                cursor.beginEditBlock()
+                cursor.select(QTextCursor.Document)
+                cursor.insertText(new_text)
+                cursor.endEditBlock()
+                cursor.setPosition(min(cursor_pos, self._editor.document().characterCount() - 1))
+                self._editor.setTextCursor(cursor)
+        self._doc = doc
+        self._sync_baseline = new_text
+        self._selected_object_index = index
+        self._tree.update_document(doc)
+        self._tree.select_object(doc.objects[index])
+        self._field_panel.set_document(doc)
+        self._field_panel.rebind_object(doc.objects[index])
+        self._update_editor_highlight()
         self._modified = True
         self._status_modified.setText("[已修改]")
         self._update_title()
+
+    def _auto_sync(self) -> None:
+        """自动解析文本；未完成的输入禁用字段编辑，防止覆盖新文本。"""
+        self._sync_timer.stop()
+        selected = self._editor.textCursor().blockNumber() + 1
+        try:
+            doc = self._idf_service.parse(self._editor.toPlainText(), self._current_path)
+        except Exception as exc:
+            self._field_panel.setEnabled(False)
+            self.statusBar().showMessage(f"等待修正 IDF: {exc}")
+            return
+        self._doc = doc
+        self._sync_baseline = self._editor.toPlainText()
+        self._tree.set_document(doc)
+        self._field_panel.set_document(doc)
+        obj = (
+            next((o for o in doc.objects if o.line_start <= selected <= o.line_end), None)
+            if self._editor.hasFocus()
+            else None
+        )
+        if (
+            obj is None
+            and self._selected_object_index is not None
+            and self._selected_object_index < len(doc.objects)
+        ):
+            obj = doc.objects[self._selected_object_index]
+        if obj is None and doc.objects:
+            obj = doc.objects[0]
+        self._selected_object_index = next((i for i, o in enumerate(doc.objects) if o is obj), None)
+        if obj:
+            self._tree.select_object(obj)
+        self._field_panel.set_object(obj)
+        self._field_panel.setEnabled(True)
+        self._update_editor_highlight()
+        self._update_actions()
+        self._status_obj.setText(f"对象: {doc.object_count()}")
+        self.statusBar().clearMessage()
+
+    def _validate_idf(self) -> None:
+        """用可缩放窗口显示当前输入的完整校验结果。"""
+        try:
+            self._field_panel.commit_pending()
+            doc = self._idf_service.parse(self._editor.toPlainText())
+            idd = self._idd_service.document if self._idd_service else None
+            if idd is None:
+                ValidationDialog(
+                    [], "语法正确。尚未加载 IDD：请在设置中配置 EnergyPlus 以启用字段校验。", self
+                ).exec()
+                return
+            issues = self._idf_service.validate(doc, idd)
+            errors = sum(issue.severity == "error" for issue in issues)
+            warnings = sum(issue.severity == "warning" for issue in issues)
+            summary = (
+                f"发现 {len(issues)} 个问题（{errors} 个错误、{warnings} 个警告）"
+                if issues
+                else "语法与字段校验通过"
+            )
+            ValidationDialog(issues, summary, self).exec()
+        except Exception as exc:
+            ValidationDialog([], f"校验失败：{exc}", self).exec()
+
+    def _open_results(self) -> None:
+        """直接分析已有 EnergyPlus 输出目录。"""
+        directory = QFileDialog.getExistingDirectory(self, "打开 EnergyPlus 结果目录")
+        if directory:
+            try:
+                self._results_workspace.load_from_run_dir(directory)
+                self._editor_tabs.setCurrentWidget(self._results_workspace)
+            except Exception as exc:
+                QMessageBox.warning(self, "结果加载失败", str(exc))
+
+    def _add_output(self, name: str, is_meter: bool) -> None:
+        """把结果字典中的选择插入当前模型。"""
+        try:
+            doc = self._idf_service.parse(self._editor.toPlainText())
+            if self._idf_service.add_output(doc, name, is_meter):
+                cursor = self._editor.textCursor()
+                cursor.beginEditBlock()
+                cursor.select(QTextCursor.Document)
+                cursor.insertText(self._idf_service.serialize(doc))
+                cursor.endEditBlock()
+                self._auto_sync()
+            self.statusBar().showMessage(
+                f"已配置每小时输出: {name}；保存并重新运行后查看曲线。", 8000
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "添加输出失败", str(exc))
+
+    def _configure_outputs(self) -> None:
+        """添加 SQLite、汇总报告和变量字典请求。依据 R-2。"""
+        try:
+            doc = self._idf_service.parse(self._editor.toPlainText())
+            self._idf_service.configure_outputs(doc)
+            cursor = self._editor.textCursor()
+            cursor.beginEditBlock()
+            cursor.select(QTextCursor.Document)
+            cursor.insertText(self._idf_service.serialize(doc))
+            cursor.endEditBlock()
+            self._auto_sync()
+            self.statusBar().showMessage(
+                "已配置 SQLite、汇总报告和变量字典；时序变量仍需在 IDF 中请求。", 8000
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "配置失败", str(exc))
 
     def _sync_tree_from_text(self) -> None:
         text = self._editor.toPlainText()
         try:
             self._doc = self._idf_service.parse(text, self._current_path)
+            self._sync_baseline = text
             self._tree.set_document(self._doc)
             self._field_panel.set_document(self._doc)
+            if self._selected_object_index is not None and self._selected_object_index < len(
+                self._doc.objects
+            ):
+                self._field_panel.rebind_object(self._doc.objects[self._selected_object_index])
             self._update_editor_highlight()
             self._status_obj.setText(f"对象: {self._doc.object_count()}")
             QMessageBox.information(
@@ -430,6 +666,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "解析错误", str(e))
 
     def _run_current(self) -> None:
+        self._field_panel.commit_pending()
+        self._show_run_config()
         if not self._current_path and not self._editor.toPlainText().strip():
             QMessageBox.warning(self, "警告", "没有可运行的 IDF 文件")
             return
@@ -448,6 +686,8 @@ class MainWindow(QMainWindow):
                     if not self._current_path:
                         return
                 self._save_file()
+                if self._modified:
+                    return
         if not self._current_path:
             QMessageBox.warning(self, "警告", "请先保存文件")
             return
@@ -461,6 +701,12 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         dlg = SettingsDialog(self._config, self)
         if dlg.exec() == SettingsDialog.Accepted:
+            if self._idd_service and self._config.get_idd_path():
+                try:
+                    self._idd_service.load(self._config.get_idd_path())
+                    self._auto_sync()
+                except Exception as exc:
+                    QMessageBox.warning(self, "IDD 加载失败", str(exc))
             apply_theme(self._config.config.theme)
 
     def _show_history(self) -> None:
@@ -486,7 +732,9 @@ class MainWindow(QMainWindow):
             "<li>对象树形结构与字段表格编辑</li>"
             "<li>EnergyPlus 运行与实时日志</li>"
             "<li>结果文件查看</li></ul>"
-            "<p>开发者：华为云码道(CodeArts)代码智能体</p>",
+            "<p>Linux 桌面端模型编辑、模拟运行与结果分析。</p>"
+            "<p>许可证：<b>GNU Affero General Public License v3（AGPL v3）</b></p>"
+            '<p><a href="https://www.gnu.org/licenses/agpl-3.0.html">查看完整许可证条款</a></p>',
         )
 
     def _find(self) -> None:

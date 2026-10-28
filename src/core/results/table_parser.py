@@ -76,9 +76,7 @@ class TableParser:
                 table_groups.setdefault(table_node.tag, []).append(table_node)
 
             for table_name, row_nodes in table_groups.items():
-                table = self._parse_table(
-                    report_name, report_for, table_name, row_nodes, notes
-                )
+                table = self._parse_table(report_name, report_for, table_name, row_nodes, notes)
                 if table is not None:
                     tables.append(table)
 
@@ -102,8 +100,13 @@ class TableParser:
         cells: list[list[str]] = []
 
         for row_node in row_nodes:
+            for node in row_node:
+                if node.tag != "name" and node.tag not in columns:
+                    columns.append(node.tag)
+
+        for row_node in row_nodes:
             row_name = ""
-            row_values: list[str] = []
+            row_values: list[str] = ["" for _ in columns]
 
             for cell_node in row_node:
                 tag = cell_node.tag
@@ -115,9 +118,9 @@ class TableParser:
                         columns.append(tag)
                     units = cell_node.get("units", "")
                     if units:
-                        row_values.append(f"{text_val} [{units}]")
+                        row_values[columns.index(tag)] = f"{text_val} [{units}]"
                     else:
-                        row_values.append(text_val)
+                        row_values[columns.index(tag)] = text_val
 
             if row_name:
                 rows.append(row_name)
