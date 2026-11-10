@@ -1,7 +1,9 @@
-# EnergyPlus Launcher
+# Neko-EP-Launcher
 
-> Linux 桌面端 EnergyPlus 图形化启动工具，基于 PySide6（Qt for Python）开发。
+> Linux 桌面端 EnergyPlus 图形化启动与建模分析工具，基于 PySide6（Qt for Python）开发。
 > 面向建筑节能 / 遮阳方向的研究与工程人员，目标是「方便编辑输入、一键运行模拟、快速查看并可视化结果」。
+> 
+> 代码仓库：[https://github.com/Chocola-X/Neko-EP-Launcher](https://github.com/Chocola-X/Neko-EP-Launcher)
 
 当前版本对应 **EnergyPlus 9.4.0**。本项目持续完善中，路线图见 [ROADMAP.md](ROADMAP.md)。
 
@@ -41,8 +43,8 @@
 ## 安装
 
 ```bash
-git clone <repo-url> EnergyPlus-Laucher
-cd EnergyPlus-Laucher
+git clone https://github.com/Chocola-X/Neko-EP-Launcher.git
+cd Neko-EP-Launcher
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # 运行依赖
 pip install -r requirements-dev.txt    # 开发依赖（可选，含测试/lint）
@@ -121,7 +123,7 @@ python main.py
 ## 项目结构
 
 ```
-EnergyPlus-Laucher/
+Neko-EP-Launcher/
 ├── main.py                 # 入口（<30 行）
 ├── pyproject.toml          # 项目元数据与构建配置
 ├── src/

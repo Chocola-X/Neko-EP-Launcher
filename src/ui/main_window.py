@@ -12,6 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
     QInputDialog,
@@ -63,7 +64,7 @@ class MainWindow(QMainWindow):
         run_repository: RunRepository | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("EnergyPlus 启动器")
+        self.setWindowTitle("Neko-EP-Launcher")
         self.resize(1400, 900)
         self.setMinimumSize(1000, 700)
 
@@ -311,7 +312,7 @@ class MainWindow(QMainWindow):
     def _update_title(self) -> None:
         name = Path(self._current_path).name if self._current_path else "未命名"
         mod = " *" if self._modified else ""
-        self.setWindowTitle(f"EnergyPlus 启动器 - {name}{mod}")
+        self.setWindowTitle(f"Neko-EP-Launcher - {name}{mod}")
 
     def _update_actions(self) -> None:
         has_doc = self._doc is not None
@@ -488,12 +489,21 @@ class MainWindow(QMainWindow):
     def _on_object_selected(self, obj: IDFObject) -> None:
         if self._doc is None:
             return
-        self._selected_object_index = next(
+        target_index = next(
             (i for i, candidate in enumerate(self._doc.objects) if candidate is obj), None
         )
-        self._field_panel.set_object(obj)
-        if obj and obj.line_start:
-            self._editor.jump_to_line(obj.line_start)
+        self._field_panel.commit_pending()
+        if target_index is not None and 0 <= target_index < len(self._doc.objects):
+            target_obj = self._doc.objects[target_index]
+        else:
+            target_obj = obj
+            target_index = next(
+                (i for i, candidate in enumerate(self._doc.objects) if candidate is obj), None
+            )
+        self._selected_object_index = target_index
+        self._field_panel.set_object(target_obj)
+        if target_obj and target_obj.line_start:
+            self._editor.jump_to_line(target_obj.line_start)
 
     def _edit_field(self, field_index: int, value: str) -> None:
         if self._doc is None or self._selected_object_index is None:
@@ -520,6 +530,7 @@ class MainWindow(QMainWindow):
     def _on_object_changed(self, obj: IDFObject) -> None:
         if self._doc is None or obj is None:
             return
+        focused_widget = QApplication.focusWidget()
         index = next((i for i, candidate in enumerate(self._doc.objects) if candidate is obj), 0)
         new_text = self._idf_service.serialize(self._doc)
         doc = self._idf_service.parse(new_text, self._current_path)
@@ -540,6 +551,8 @@ class MainWindow(QMainWindow):
         self._tree.select_object(doc.objects[index])
         self._field_panel.set_document(doc)
         self._field_panel.rebind_object(doc.objects[index])
+        if focused_widget is not None and focused_widget.isVisible():
+            focused_widget.setFocus()
         self._update_editor_highlight()
         self._modified = True
         self._status_modified.setText("[已修改]")
@@ -746,15 +759,15 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
-            "关于 EnergyPlus 启动器",
-            "<h3>EnergyPlus 图形化启动器</h3>"
-            "<p>基于 PySide6 开发的 EnergyPlus 配置编辑与运行工具。</p>"
-            "<p>功能：</p><ul>"
-            "<li>IDF 文件编辑（语法高亮、行号）</li>"
-            "<li>对象树形结构与字段表格编辑</li>"
-            "<li>EnergyPlus 运行与实时日志</li>"
-            "<li>结果文件查看</li></ul>"
-            "<p>Linux 桌面端模型编辑、模拟运行与结果分析。</p>"
+            "关于 Neko-EP-Launcher",
+            "<h3>Neko-EP-Launcher</h3>"
+            "<p>Linux 桌面端 EnergyPlus 图形化启动与建模分析工具，基于 PySide6（Qt for Python）开发。</p>"
+            '<p>项目仓库：<a href="https://github.com/Chocola-X/Neko-EP-Launcher">https://github.com/Chocola-X/Neko-EP-Launcher</a></p>'
+            "<p>功能特性：</p><ul>"
+            "<li>IDF 文件编辑（语法高亮、行号、自动同步）</li>"
+            "<li>对象树形结构与 IDD 元数据驱动字段编辑</li>"
+            "<li>EnergyPlus 模拟运行与实时日志</li>"
+            "<li>结果结构化分析（错误诊断、汇总表格、时序曲线、能耗图表、增强 HTML 报告）</li></ul>"
             "<p>许可证：<b>GNU Affero General Public License v3（AGPL v3）</b></p>"
             '<p><a href="https://www.gnu.org/licenses/agpl-3.0.html">查看完整许可证条款</a></p>',
         )

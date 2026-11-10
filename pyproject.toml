@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "energyplus-launcher"
+name = "neko-ep-launcher"
 version = "0.5.0"
-description = "Linux 桌面端 EnergyPlus 图形化启动工具"
+description = "Linux 桌面端 EnergyPlus 图形化启动与建模分析工具"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -15,7 +15,12 @@ dependencies = [
     "pandas>=2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Chocola-X/Neko-EP-Launcher"
+Repository = "https://github.com/Chocola-X/Neko-EP-Launcher"
+
 [project.scripts]
+neko-ep-launcher = "main:main"
 energyplus-launcher = "main:main"
 
 [tool.setuptools]

@@ -1,4 +1,4 @@
-# ROADMAP.md — EnergyPlus Launcher 实施路线图
+# ROADMAP.md — Neko-EP-Launcher 实施路线图
 
 > 本文件给出从当前初版到最终目标的分阶段实施计划。
 > 每个阶段都是**可独立交付、可验收**的增量。阶段内任务顺序可调整，但不得跳过验收门禁。

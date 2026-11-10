@@ -106,5 +106,5 @@ def build_report(
         + f'<h2>能耗概览</h2><div class="grid">{summaries or "<p>没有可用的能耗汇总数据。</p>"}</div><h2>时序曲线</h2>{"".join(charts) or "<p>没有可用的时序数据。请请求输出变量并启用 SQLite 后重新模拟。</p>"}<h2>诊断记录（{len(errors)}）</h2><ul>{diagnostics or "<li>未发现诊断记录。</li>"}</ul><h2>汇总表（{len(tables)}）</h2>'
         + """<input id="search" placeholder="筛选报告或表名" aria-label="筛选汇总表">"""
         + "".join(reports)
-        + """<footer>EnergyPlus Launcher · 单文件离线报告 · 数据来源：EnergyPlus SQL/XML/ERR 输出（R-4）。图表为抽样预览，完整时序可在启动器导出 CSV。</footer><script>document.getElementById('search').addEventListener('input',function(){const q=this.value.toLowerCase();document.querySelectorAll('details').forEach(e=>e.hidden=!e.querySelector('summary').textContent.toLowerCase().includes(q));});</script></html>"""
+        + """<footer>Neko-EP-Launcher · 单文件离线报告 · 数据来源：EnergyPlus SQL/XML/ERR 输出（R-4）。图表为抽样预览，完整时序可在启动器导出 CSV。</footer><script>document.getElementById('search').addEventListener('input',function(){const q=this.value.toLowerCase();document.querySelectorAll('details').forEach(e=>e.hidden=!e.querySelector('summary').textContent.toLowerCase().includes(q));});</script></html>"""
     )

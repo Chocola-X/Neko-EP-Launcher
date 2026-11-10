@@ -23,6 +23,7 @@ def window(qtbot, tmp_path: Path):
     )
     qtbot.addWidget(window, before_close_func=lambda widget: setattr(widget, "_modified", False))
     window.show()
+    window.activateWindow()
     path = tmp_path / "input.idf"
     path.write_text("! comment\nZone, Z1, 0;\nZone, Z2, 90;\n")
     window._open_file(str(path))

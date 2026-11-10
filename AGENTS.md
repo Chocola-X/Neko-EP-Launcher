@@ -1,4 +1,4 @@
-# AGENTS.md — EnergyPlus Launcher 开发规范与行为准则
+# AGENTS.md — Neko-EP-Launcher 开发规范与行为准则
 
 > 本文件是**所有参与本项目的 AI Agent 与人类开发者必须遵守的强制规范**。
 > 优先级：本文件 > 全局 AGENTS.md > 通用约定。当本文件与其它规则冲突时，以本文件为准。
@@ -8,7 +8,7 @@
 
 ## 0. 项目定位与最终目标
 
-本项目是一个 **Linux 桌面端 EnergyPlus 图形化启动工具**，基于 PySide6（Qt for Python）开发，目标用户为建筑节能 / 遮阳方向的研究与工程人员。
+本项目是一个 **Linux 桌面端 EnergyPlus 图形化启动工具（Neko-EP-Launcher）**，基于 PySide6（Qt for Python）开发，目标用户为建筑节能 / 遮阳方向的研究与工程人员。代码仓库位于 https://github.com/Chocola-X/Neko-EP-Launcher 。
 
 最终目标（按重要性排序）：
 
@@ -46,7 +46,7 @@
 代码必须按下列分层组织，**层间只能自上而下依赖**，禁止逆向依赖与跨层调用。
 
 ```
-EnergyPlus-Laucher/
+Neko-EP-Launcher/
 ├── main.py                         # 仅负责构造 QApplication 与启动，<30 行
 ├── pyproject.toml                  # 项目元数据与构建配置
 ├── requirements.txt                # 运行依赖

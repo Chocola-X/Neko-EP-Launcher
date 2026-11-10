@@ -281,12 +281,18 @@ class FieldEditPanel(QWidget):
                     editor.setCurrentText(value)
 
     def commit_pending(self) -> None:
-        """保存或运行前提交当前输入框，支持键盘快捷键保存。"""
+        """保存、切换对象或运行前提交当前输入框，支持键盘快捷键保存。"""
+        if self._obj is None or not self.isEnabled():
+            return
         for row in range(self._table.rowCount()):
             editor = self._table.cellWidget(row, 2)
-            if editor and (
+            if editor is None:
+                continue
+            value = editor.currentText() if isinstance(editor, QComboBox) else editor.text()
+            if (
                 editor.hasFocus()
                 or (isinstance(editor, QComboBox) and editor.lineEdit().hasFocus())
+                or (value != self._obj.get_field(row))
             ):
                 self._commit_row(row)
                 return
@@ -304,6 +310,9 @@ class FieldEditPanel(QWidget):
         self._table.blockSignals(False)
         self._update_editor_validation(row)
         self.fieldEditRequested.emit(row, value)
+        target_focus = editor.lineEdit() if isinstance(editor, QComboBox) else editor
+        if target_focus and target_focus.isVisible():
+            target_focus.setFocus()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._obj is not None and item.column() == 2:
