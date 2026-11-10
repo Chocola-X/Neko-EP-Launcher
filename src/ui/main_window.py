@@ -6,11 +6,10 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -232,6 +231,7 @@ class MainWindow(QMainWindow):
 
         self._tree.objectSelected.connect(self._on_object_selected)
         self._tree.objectCopyRequested.connect(self._copy_object)
+        self._tree.objectsCopyRequested.connect(self._copy_objects)
         self._tree.objectCopyJsonRequested.connect(self._copy_object_json)
         self._tree.objectCopyFieldsRequested.connect(self._copy_object_fields)
         self._tree.objectPasteRequested.connect(self._paste_object_from_clipboard)
@@ -240,6 +240,8 @@ class MainWindow(QMainWindow):
         self._field_panel.fieldEditRequested.connect(self._edit_field)
         self._field_panel.structureEditRequested.connect(self._resize_fields)
         self._field_panel.batchFieldsEditRequested.connect(self._batch_edit_fields)
+        self._field_panel.fieldsCopyRequested.connect(self._copy_fields)
+        self._field_panel.fieldsPasteRequested.connect(self._paste_fields)
         self._tree.objectActivated.connect(
             lambda obj: self._editor_tabs.setCurrentWidget(self._editor)
         )
@@ -361,6 +363,7 @@ class MainWindow(QMainWindow):
             return
         lines = {obj.line_start - 1 for obj in self._doc.objects if obj.line_start > 0}
         self._editor.set_object_lines(lines)
+        self._refresh_validation()
 
     def _new_file(self) -> None:
         if not self._confirm_discard():
@@ -536,6 +539,7 @@ class MainWindow(QMainWindow):
             )
         self._selected_object_index = target_index
         self._field_panel.set_object(target_obj)
+        self._refresh_validation()
         if target_obj and target_obj.line_start:
             self._editor.jump_to_line(target_obj.line_start)
 
@@ -859,12 +863,28 @@ class MainWindow(QMainWindow):
             self.newWindowRequested.emit(path)
 
     def _copy_selected_object(self) -> None:
-        """复制当前选中的对象。"""
-        obj = self._tree.get_selected_object()
-        if obj is not None:
-            self._copy_object(obj)
-        else:
-            self.statusBar().showMessage("当前未选中任何对象", 3000)
+        """复制侧栏多选对象。"""
+        self._copy_objects(self._tree.selected_indices(), False)
+
+    def _copy_objects(self, indices: tuple[int, ...], dependencies: bool) -> None:
+        """将选择及可选依赖写入剪贴板，可跨窗口粘贴。"""
+        try:
+            self._field_panel.commit_pending()
+            if self._doc is None or not indices:
+                self.statusBar().showMessage("请先在侧栏选择对象或对象类型", 4000)
+                return
+            idd = self._idd_service.document if self._idd_service else None
+            if dependencies and idd is None:
+                raise ValueError("请先在设置中加载 EnergyPlus IDD，以确定引用关系")
+            objects = self._idf_service.collect_objects(
+                self._doc, indices, idd if dependencies else None
+            )
+            QApplication.clipboard().setText(
+                "\n\n".join(self._idf_service.serialize_object(obj) for obj in objects)
+            )
+            self.statusBar().showMessage(f"已复制 {len(objects)} 个对象，可切换目标窗口粘贴", 5000)
+        except Exception as exc:
+            QMessageBox.warning(self, "复制失败", str(exc))
 
     def _copy_object(self, obj: IDFObject) -> None:
         """将对象序列化为标准 IDF 字符串写入剪贴板。"""
@@ -898,41 +918,33 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"已复制对象参数列表 ({len(obj.fields)}项)", 3000)
 
     def _paste_object_from_clipboard(self) -> None:
-        """从剪贴板读取 IDF 代码或 JSON，解析并追加到当前模型。"""
-        clipboard = QApplication.clipboard()
-        if clipboard is None:
-            return
-        text = clipboard.text().strip()
-        if not text:
-            self.statusBar().showMessage("剪贴板内容为空", 3000)
-            return
-
-        objects = self._idf_service.parse_objects(text)
-        if not objects:
-            try:
-                import json
-
-                data = json.loads(text)
-                if isinstance(data, dict) and "type" in data and "fields" in data:
-                    objects = [IDFObject(data["type"], data["fields"])]
-            except Exception:
-                pass
-
-        if not objects:
-            self.statusBar().showMessage("剪贴板中未找到有效的 IDF 对象", 3000)
-            return
-
-        if self._doc is None:
-            self._doc = IDFDocument()
-
-        for obj in objects:
-            self._idf_service.add_object(self._doc, obj)
-
-        target = self._doc.objects[-1]
-        self._on_object_changed(target)
-        self._tree.select_object(target)
-        self._field_panel.set_object(target)
-        self.statusBar().showMessage(f"已成功粘贴 {len(objects)} 个对象并同步更新", 3000)
+        """校验剪贴板对象后原子追加，并同步源码、侧栏与属性。"""
+        try:
+            self._field_panel.commit_pending()
+            if self._editor.toPlainText() != self._sync_baseline:
+                # 源码尚未同步时必须先解析，避免覆盖未完成的修改。
+                self._idf_service.parse(self._editor.toPlainText())
+                self._auto_sync()
+            text = QApplication.clipboard().text().strip()
+            if not text:
+                return
+            objects = self._idf_service.parse_objects(text)
+            if not objects:
+                raise ValueError("剪贴板没有 IDF 对象")
+            if self._doc is None:
+                self._doc = IDFDocument()
+            idd = self._idd_service.document if self._idd_service else None
+            count = self._idf_service.paste_objects(self._doc, objects, idd)
+            if count:
+                self._on_object_changed(self._doc.objects[-1])
+                self._tree.set_document(self._doc)
+                target = self._doc.objects[self._selected_object_index]
+                self._tree.select_object(target)
+                self._field_panel.set_object(target)
+                self._refresh_validation()
+            self.statusBar().showMessage(f"已粘贴 {count} 个对象，相同定义自动跳过", 5000)
+        except Exception as exc:
+            QMessageBox.warning(self, "粘贴失败", str(exc))
 
     def _duplicate_object(self, obj: IDFObject) -> None:
         """复制指定对象并在当前模型中创建副本。"""
@@ -943,8 +955,11 @@ class MainWindow(QMainWindow):
             new_obj = self._idf_service.duplicate_object(self._doc, index)
             if new_obj:
                 self._on_object_changed(new_obj)
-                self._tree.select_object(new_obj)
-                self._field_panel.set_object(new_obj)
+                self._tree.set_document(self._doc)
+                target = self._doc.objects[-1]
+                self._tree.select_object(target)
+                self._field_panel.set_object(target)
+                self._refresh_validation()
                 self.statusBar().showMessage(f"已创建对象副本: {new_obj.name()}", 3000)
 
     def _delete_object(self, obj: IDFObject) -> None:
@@ -977,12 +992,70 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已删除对象 {obj.type_name}", 3000)
 
     def _batch_edit_fields(self, values: list[str]) -> None:
-        """批量覆盖当前选中的对象字段值。"""
+        """原子覆盖参数，错误时保留原文档。"""
+        self._apply_fields(tuple(enumerate(values)))
+
+    def _apply_fields(self, values: tuple[tuple[int, str], ...]) -> None:
         if self._doc is None or self._selected_object_index is None:
             return
-        for idx, val in enumerate(values):
-            with contextlib.suppress(Exception):
-                self._idf_service.update_field(self._doc, self._selected_object_index, idx, val)
-        self._on_object_changed(self._doc.objects[self._selected_object_index])
-        self._field_panel.set_object(self._doc.objects[self._selected_object_index])
-        self.statusBar().showMessage(f"已批量覆盖更新 {len(values)} 个参数", 3000)
+        try:
+            self._idf_service.update_fields(self._doc, self._selected_object_index, values)
+            self._on_object_changed(self._doc.objects[self._selected_object_index])
+            self._field_panel.set_object(self._doc.objects[self._selected_object_index])
+            self._refresh_validation()
+        except Exception as exc:
+            QMessageBox.warning(self, "属性粘贴失败", str(exc))
+
+    def _copy_fields(self, indices: tuple[int, ...]) -> None:
+        try:
+            self._field_panel.commit_pending()
+            if self._doc is None or self._selected_object_index is None:
+                return
+            obj = self._doc.objects[self._selected_object_index]
+            mime = QMimeData()
+            mime.setData(
+                "application/x-neko-idf-fields",
+                self._idf_service.encode_fields(obj, indices).encode(),
+            )
+            mime.setText(", ".join(obj.get_field(index) for index in indices))
+            QApplication.clipboard().setMimeData(mime)
+            self.statusBar().showMessage(
+                f"已复制 {len(indices)} 个属性，粘贴时保留原字段位置", 4000
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "属性复制失败", str(exc))
+
+    def _paste_fields(self) -> None:
+        try:
+            self._field_panel.commit_pending()
+            if self._doc is None or self._selected_object_index is None:
+                return
+            obj = self._doc.objects[self._selected_object_index]
+            mime = QApplication.clipboard().mimeData()
+            if mime.hasFormat("application/x-neko-idf-fields"):
+                values = self._idf_service.decode_fields(
+                    bytes(mime.data("application/x-neko-idf-fields")).decode(), obj.type_name
+                )
+            else:
+                text = mime.text().strip().rstrip(";")
+                if not text:
+                    return
+                fields = self._idf_service.parse(f"Parameters,{text};").objects[0].fields
+                values = tuple(enumerate(fields))
+            self._apply_fields(values)
+        except Exception as exc:
+            QMessageBox.warning(self, "属性粘贴失败", str(exc))
+
+    def _refresh_validation(self) -> None:
+        if self._doc is None:
+            return
+        idd = self._idd_service.document if self._idd_service else None
+        issues = self._idf_service.validate(self._doc, idd)
+        self._tree.set_validation_issues(issues)
+        messages: dict[int, str] = {}
+        for issue in issues:
+            if issue.object_index == self._selected_object_index:
+                messages[issue.field_index] = (
+                    messages.get(issue.field_index, "") + issue.message + "\n"
+                )
+        self._field_panel.set_validation_messages(messages)

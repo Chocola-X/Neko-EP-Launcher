@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+from dataclasses import replace
 from pathlib import Path
 
 from src.core.exceptions import IDFParseError
@@ -105,7 +107,8 @@ class IDFService:
         """
         issues: list[ValidationIssue] = []
         ref_index = self._build_reference_index(doc, idd)
-        for obj in doc.objects:
+        for object_index, obj in enumerate(doc.objects):
+            issue_start = len(issues)
             obj_def = idd.get(obj.type_name) if idd else None
             name = obj.name()
             for i in range(max(len(obj.fields), len(obj_def.fields) if obj_def else 0)):
@@ -127,6 +130,9 @@ class IDFService:
                 if fdef and stripped:
                     self._check_type(issues, obj, name, i, fname, stripped, fdef)
                     self._check_reference(issues, obj, name, i, fname, stripped, fdef, ref_index)
+            issues[issue_start:] = [
+                replace(issue, object_index=object_index) for issue in issues[issue_start:]
+            ]
         return issues
 
     def _check_type(
@@ -203,7 +209,7 @@ class IDFService:
                 )
         elif fdef.type == "choice" and fdef.key_choices:
             unquoted = val.strip("\"'")
-            if unquoted not in fdef.key_choices:
+            if unquoted.casefold() not in {choice.casefold() for choice in fdef.key_choices}:
                 issues.append(
                     ValidationIssue(
                         severity="warning",
@@ -260,7 +266,7 @@ class IDFService:
             for i, val in enumerate(obj.fields):
                 if not val.strip():
                     continue
-                fdef = obj_def.fields[i] if i < len(obj_def.fields) else None
+                fdef = obj_def.get_field(i)
                 if fdef is None:
                     continue
                 unquoted = val.strip("\"'")
@@ -318,14 +324,25 @@ class IDFService:
             obj.comments = obj.comments[: len(obj.fields)]
 
     def parse_objects(self, text: str) -> list[IDFObject]:
-        """从 IDF 代码文本中解析出对象列表。"""
+        """解析 IDF 或本应用的 JSON 对象剪贴板，损坏内容抛出解析或值错误。"""
         if not text.strip():
             return []
-        try:
-            doc = self._parser.parse_text(text)
-            return list(doc.objects)
-        except Exception:
-            return []
+        if text.lstrip().startswith("{"):
+            data = json.loads(text)
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("type"), str)
+                or not isinstance(data.get("fields"), list)
+                or not all(isinstance(value, str) for value in data["fields"])
+            ):
+                raise ValueError("对象 JSON 格式错误")
+            # 重新解析序列化文本，确保 JSON 值不会注入额外对象。
+            obj = IDFObject(data["type"], data["fields"])
+            parsed = self.parse(self.serialize_object(obj)).objects
+            if len(parsed) != 1 or parsed[0].fields != obj.fields:
+                raise ValueError("JSON 含非法的 IDF 字段值")
+            return parsed
+        return self.parse(text).objects
 
     def add_object(self, doc: IDFDocument, obj: IDFObject) -> None:
         """向文档追加一个对象，重置源码区间以作为新增对象序列化。"""
@@ -364,3 +381,131 @@ class IDFService:
             doc.objects.append(new_obj)
             return new_obj
         return None
+
+    def collect_objects(
+        self, doc: IDFDocument, indices: tuple[int, ...], idd: IDDDocument | None = None
+    ) -> list[IDFObject]:
+        """按源文件顺序收集所选对象；提供 IDD 时递归包含引用依赖（R-2/R-10）。
+
+        Args:
+            doc: 来源文档。
+            indices: 所选对象索引。
+            idd: 字段引用元数据；None 表示仅复制选择。
+
+        Raises:
+            ValueError: 引用缺失或同一引用存在歧义。
+        """
+        selected = set(indices)
+        if any(i < 0 or i >= len(doc.objects) for i in selected):
+            raise ValueError("对象选择已失效，请重新选择")
+        if idd is not None:
+            providers: dict[tuple[str, str], set[int]] = {}
+            for index, obj in enumerate(doc.objects):
+                definition = idd.get(obj.type_name)
+                if definition is None:
+                    continue
+                for field_index, value in enumerate(obj.fields):
+                    field = definition.get_field(field_index)
+                    if field and value.strip():
+                        for reference in field.references:
+                            key = (reference, value.strip().strip("\"'").casefold())
+                            providers.setdefault(key, set()).add(index)
+            pending = list(selected)
+            while pending:
+                obj = doc.objects[pending.pop()]
+                definition = idd.get(obj.type_name)
+                if definition is None:
+                    raise ValueError(f"IDD 中没有 {obj.type_name}，无法确定引用依赖")
+                for index, value in enumerate(obj.fields):
+                    field = definition.get_field(index)
+                    if not field or not field.object_lists or not value.strip():
+                        continue
+                    matches: set[int] = set()
+                    for reference in field.object_lists:
+                        matches.update(
+                            providers.get((reference, value.strip().strip("\"'").casefold()), set())
+                        )
+                    if len(matches) != 1:
+                        raise ValueError(
+                            f"{obj.type_name} / {obj.name()} 的引用 {value} 缺失或不唯一"
+                        )
+                    for match in matches - selected:
+                        selected.add(match)
+                        pending.append(match)
+        return [obj for index, obj in enumerate(doc.objects) if index in selected]
+
+    def paste_objects(
+        self, doc: IDFDocument, objects: list[IDFObject], idd: IDDDocument | None = None
+    ) -> int:
+        """原子追加对象；跳过相同定义，拒绝同名或唯一对象冲突，返回新增数。"""
+        additions: list[IDFObject] = []
+        for obj in objects:
+            definition = idd.get(obj.type_name) if idd else None
+            name_field = definition.get_field(0) if definition else None
+            has_name = name_field is None or name_field.name.casefold() == "name"
+            for existing in [*doc.objects, *additions]:
+                same_type = existing.type_name.casefold() == obj.type_name.casefold()
+                if same_type and existing.fields == obj.fields:
+                    break
+                existing_def = idd.get(existing.type_name) if idd else None
+                existing_name = existing_def.get_field(0) if existing_def else None
+                shared_reference = bool(
+                    name_field
+                    and existing_name
+                    and set(name_field.references) & set(existing_name.references)
+                )
+                name_conflict = (
+                    has_name
+                    and (same_type or shared_reference)
+                    and bool(obj.name())
+                    and existing.name().strip("\"'").casefold()
+                    == obj.name().strip("\"'").casefold()
+                )
+                if (same_type and definition and definition.unique_object) or name_conflict:
+                    raise ValueError(
+                        f"{obj.type_name} / {obj.name()} 与已有定义冲突，请先重命名或调整目标对象"
+                    )
+            else:
+                additions.append(obj)
+        for obj in additions:
+            self.add_object(doc, obj)
+        return len(additions)
+
+    def update_fields(
+        self, doc: IDFDocument, object_index: int, values: tuple[tuple[int, str], ...]
+    ) -> None:
+        """原子修改选定字段，保留未选择字段；非法值不产生部分修改。"""
+        obj = doc.objects[object_index]
+        draft = IDFDocument(objects=[IDFObject(obj.type_name, list(obj.fields))])
+        for index, value in values:
+            self.update_field(draft, 0, index, value)
+        for index, _ in values:
+            obj.set_field(index, draft.objects[0].get_field(index))
+
+    def encode_fields(self, obj: IDFObject, indices: tuple[int, ...]) -> str:
+        """编码带原字段位置的参数，支持引号、换行与空值。"""
+        return json.dumps(
+            {"type": obj.type_name, "fields": [[index, obj.get_field(index)] for index in indices]},
+            ensure_ascii=False,
+        )
+
+    def decode_fields(self, text: str, type_name: str) -> tuple[tuple[int, str], ...]:
+        """校验结构化字段剪贴板；拒绝类型不匹配或损坏数据。"""
+        data = json.loads(text)
+        if not isinstance(data, dict) or data.get("type", "").casefold() != type_name.casefold():
+            raise ValueError("所选属性只能粘贴到同类型对象")
+        fields = data.get("fields")
+        if not isinstance(fields, list) or not fields:
+            raise ValueError("剪贴板没有属性")
+        result: list[tuple[int, str]] = []
+        for pair in fields:
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or type(pair[0]) is not int
+                or pair[0] < 0
+                or not isinstance(pair[1], str)
+            ):
+                raise ValueError("属性剪贴板格式错误")
+            result.append((pair[0], pair[1]))
+        return tuple(result)

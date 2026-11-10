@@ -103,6 +103,7 @@ class ValidationIssue:
         object_name: 对象名称字段。
         field_index: 字段索引（0-based，-1 表示对象级）。
         field_name: 字段名。
+        object_index: 文档内对象索引（0-based），用于准确定位同名对象。
     """
 
     severity: str
@@ -111,3 +112,4 @@ class ValidationIssue:
     object_name: str = ""
     field_index: int = -1
     field_name: str = ""
+    object_index: int = -1

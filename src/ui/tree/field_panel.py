@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QComboBox,
     QCompleter,
     QFormLayout,
@@ -45,6 +44,8 @@ class FieldEditPanel(QWidget):
     fieldEditRequested = Signal(int, str)
     structureEditRequested = Signal(bool)
     batchFieldsEditRequested = Signal(list)
+    fieldsCopyRequested = Signal(tuple)
+    fieldsPasteRequested = Signal()
 
     def __init__(
         self,
@@ -94,7 +95,8 @@ class FieldEditPanel(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Interactive)
         self._table.setColumnWidth(1, 230)
         self._table.setColumnWidth(3, 180)
-        self._table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.verticalHeader().setDefaultSectionSize(34)
         self._table.verticalHeader().setVisible(False)
         self._table.itemChanged.connect(self._on_item_changed)
@@ -116,6 +118,12 @@ class FieldEditPanel(QWidget):
         btn_layout.addWidget(self._btn_del)
         btn_layout.addWidget(self._btn_copy_params)
         btn_layout.addWidget(self._btn_paste_params)
+        self._btn_copy_selected = QPushButton("复制所选属性")
+        self._btn_copy_selected.setToolTip(
+            "在字段名或序号栏按 Ctrl/Shift 多选；粘贴到同类型对象的原字段位置"
+        )
+        self._btn_copy_selected.clicked.connect(self._copy_selected_params)
+        btn_layout.addWidget(self._btn_copy_selected)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -155,12 +163,12 @@ class FieldEditPanel(QWidget):
         display_name = (fdef.name if fdef and fdef.name else name) or f"字段 {row + 1}"
         required_mark = " *" if fdef and fdef.required else ""
         idx_item = QTableWidgetItem(str(row + 1))
-        idx_item.setFlags(Qt.ItemIsEnabled)
+        idx_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         idx_item.setTextAlignment(Qt.AlignCenter)
         self._table.setItem(row, 0, idx_item)
 
         name_item = QTableWidgetItem(display_name + required_mark)
-        name_item.setFlags(Qt.ItemIsEnabled)
+        name_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         if fdef and fdef.required:
             name_item.setForeground(QColor("#E06C75"))
         self._table.setItem(row, 1, name_item)
@@ -212,7 +220,7 @@ class FieldEditPanel(QWidget):
                 parts.append(f"({len(fdef.key_choices)}项)")
             unit_text = " ".join(parts)
         unit_item = QTableWidgetItem(unit_text)
-        unit_item.setFlags(Qt.ItemIsEnabled)
+        unit_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self._table.setItem(row, 3, unit_item)
 
     def _validate_cell(self, row: int, value: str, fdef: FieldDef | None) -> None:
@@ -336,29 +344,35 @@ class FieldEditPanel(QWidget):
         if self._obj is not None:
             self.structureEditRequested.emit(False)
 
+    def _copy_selected_params(self) -> None:
+        indices = tuple(
+            sorted({index.row() for index in self._table.selectionModel().selectedRows()})
+        )
+        if indices:
+            self.fieldsCopyRequested.emit(indices)
+        else:
+            self._hint.setText("请在序号或字段名栏按 Ctrl/Shift 选择属性行。")
+
     def _copy_all_params(self) -> None:
-        if self._obj is None:
-            return
-        text = ", ".join(self._obj.fields)
-        clipboard = QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(text)
-        self._hint.setText(f"已复制当前对象的 {len(self._obj.fields)} 个参数到剪贴板。")
+        if self._obj is not None:
+            self.fieldsCopyRequested.emit(tuple(range(len(self._obj.fields))))
 
     def _paste_all_params(self) -> None:
-        if self._obj is None or not self.isEnabled():
-            return
-        clipboard = QApplication.clipboard()
-        if clipboard is None:
-            return
-        text = clipboard.text().strip()
-        if not text:
-            return
-        clean_text = text.rstrip(";").strip()
-        if "\n" in clean_text:
-            parts = [p.strip() for p in clean_text.splitlines() if p.strip()]
-        else:
-            parts = [p.strip() for p in clean_text.split(",")]
-        if parts:
-            self.batchFieldsEditRequested.emit(parts)
-            self._hint.setText(f"已从剪贴板粘贴覆盖 {len(parts)} 个参数。")
+        if self._obj is not None and self.isEnabled():
+            self.fieldsPasteRequested.emit()
+
+    def set_validation_messages(self, messages: dict[int, str]) -> None:
+        """把服务校验结果应用到字段，包括选择项与缺失引用。"""
+        blocker = QSignalBlocker(self._table)
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 2)
+            item.setToolTip(messages.get(row, ""))
+            item.setForeground(
+                QColor("#E06C75") if row in messages else self.palette().color(QPalette.Text)
+            )
+            self._update_editor_validation(row)
+            editor = self._table.cellWidget(row, 2)
+            if editor and row not in messages:
+                fdef = self._obj_def.get_field(row) if self._obj_def else None
+                editor.setToolTip(fdef.note if fdef else "修改后按 Enter 提交")
+        blocker.unblock()
