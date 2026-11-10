@@ -52,6 +52,7 @@ Neko-EP-Launcher/
 ├── pyproject.toml                  # 项目元数据与构建配置
 ├── requirements.txt                # 运行依赖
 ├── requirements-dev.txt            # 开发依赖（pytest/ruff/mypy）
+├── docs/                           # 详细开发、输出规范与官方参考文档
 ├── ruff.toml / mypy.ini            # 静态检查配置
 ├── config.json                     # 用户配置（运行时生成，不入库）
 ├── data/                           # 运行数据（.gitignore 忽略）
@@ -328,7 +329,7 @@ mypy src                     # 类型检查
 - **公开类/函数**必须有 docstring（Google 风格，中文），说明用途、参数、返回、可能的异常。
 - **非公开**逻辑复杂处加注释解释"为什么"，不解释"是什么"。
 - **禁止**用注释复述代码。**禁止**保留注释掉的死代码（用 git 管理历史）。
-- README.md 面向用户；AGENTS.md 面向开发者/AI；ROADMAP.md 面向排期。三者保持一致，矛盾时以 AGENTS.md 为准并同步修正。
+- README.md 面向用户使用；docs/ 面向详细开发技术文档与输出规范；AGENTS.md 面向开发者/AI 准则；ROADMAP.md 面向排期。各文档保持一致，矛盾时以 AGENTS.md 为准并同步修正。
 - 涉及 EnergyPlus 行为的注释/文档必须标注参考资料编号（如「依据 R-4 Output File List」）。
 
 ---
