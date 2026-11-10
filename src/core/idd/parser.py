@@ -163,6 +163,8 @@ class IDDParser:
             field.object_lists.append(value)
         elif tag == "\\reference":
             field.references.append(value)
+        elif tag == "\\reference-class-name":
+            field.class_references.append(value)
         elif tag == "\\note":
             field.note = value
         elif tag == "\\autosizable":

@@ -23,6 +23,7 @@ class FieldDef:
         key_choices: choice 类型的可选值列表。
         object_lists: object-list 类型的引用列表名。
         references: 该字段作为引用源的名（用于被其他对象引用）。
+        class_references: 把所属对象类型名加入的引用列表（R-10 reference-class-name）。
         minimum: 最小值（含）。
         minimum_greater: 最小值（不含）。
         maximum: 最大值（含）。
@@ -44,6 +45,7 @@ class FieldDef:
     key_choices: list[str] = field(default_factory=list)
     object_lists: list[str] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
+    class_references: list[str] = field(default_factory=list)
     minimum: float | None = None
     minimum_greater: float | None = None
     maximum: float | None = None
@@ -54,6 +56,17 @@ class FieldDef:
     begin_extensible: bool = False
     deprecated: bool = False
     retaincase: bool = False
+
+    def accepts_automatic_value(self, value: str) -> bool:
+        """判断 IDF 自动数值关键字；9.4 引擎允许两种拼写互用。
+
+        依据官方 v9.4.0 InputProcessing/IdfParser.cc parse_number 与 R-10。
+        普通数值字段不接受自动关键字；不改变原始字段文本。
+        """
+        return (self.autosizable or self.autocalculatable) and value.strip().casefold() in {
+            "autosize",
+            "autocalculate",
+        }
 
 
 @dataclass(slots=True)

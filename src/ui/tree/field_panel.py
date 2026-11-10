@@ -181,6 +181,9 @@ class FieldEditPanel(QWidget):
             combo = QComboBox()
             combo.setEditable(True)
             choices = list(fdef.key_choices)
+            if fdef.object_lists and self._idd:
+                for reference in fdef.object_lists:
+                    choices.extend(self._idd.get_reference_names(reference))
             if fdef.object_lists and self._doc and self._idd:
                 for candidate in self._doc.objects:
                     definition = self._idd.get_object_def(candidate.type_name)
@@ -234,9 +237,7 @@ class FieldEditPanel(QWidget):
                 item.setForeground(self.palette().color(QPalette.Text))
             return
         if fdef and fdef.type in ("real", "integer"):
-            if (fdef.autosizable and value.casefold() == "autosize") or (
-                fdef.autocalculatable and value.casefold() == "autocalculate"
-            ):
+            if fdef.accepts_automatic_value(value):
                 item.setForeground(QColor("#98C379"))
                 return
             try:

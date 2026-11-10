@@ -164,3 +164,15 @@ def test_real_idd_zone_fields(idd_doc: IDDDocument) -> None:
     obj = idd_doc.get("Zone")
     assert obj.fields[0].name == "Name"
     assert obj.fields[0].required is True
+
+
+def test_class_reference_is_distinct_from_instance_reference() -> None:
+    """依据 R-10：类型名引用不等同于对象实例名称。"""
+    doc = IDDParser().parse_text(
+        "Fan:ConstantVolume,\n A1; \\field Name\n"
+        " \\reference FanNames\n \\reference-class-name FanTypes\n"
+        " \\reference-class-name BranchTypes\n"
+    )
+    field = doc.get("Fan:ConstantVolume").fields[0]
+    assert field.references == ["FanNames"]
+    assert field.class_references == ["FanTypes", "BranchTypes"]

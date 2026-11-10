@@ -30,6 +30,7 @@ def test_thermochromic_construction_transfer(qtbot, tmp_path, monkeypatch) -> No
     target = container.create_window(target_path)
     for win in (source, target):
         qtbot.addWidget(win, before_close_func=lambda w: setattr(w, "_modified", False))
+    assert not container.idf_service.validate(source._doc, container.idd_service.document)
     index = next(
         i
         for i, obj in enumerate(source._doc.objects)

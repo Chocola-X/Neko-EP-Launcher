@@ -46,7 +46,7 @@ class IDDService:
             IDDFormatError: 解析失败。
         """
         idd_path = Path(idd_path)
-        cache_key = "v2:" + hashlib.sha256(idd_path.read_bytes()).hexdigest()
+        cache_key = "v3:" + hashlib.sha256(idd_path.read_bytes()).hexdigest()
         if self._cache_path and self._try_load_cache(cache_key):
             logger.info("从缓存加载 IDD: %s", self._cache_path)
             return self._doc  # type: ignore[return-value]
@@ -64,20 +64,20 @@ class IDDService:
         return self._doc.get(type_name)
 
     def get_reference_names(self, object_list_name: str) -> list[str]:
-        """查询某 object-list 引用的所有对象名称（用于可搜索下拉）。
+        """查询可直接用作引用值的对象类型名（R-10 reference-class-name）。
 
         Args:
             object_list_name: \\object-list 名称。
 
         Returns:
-            提供该 reference 的对象实例名称列表（需结合 IDF 文档）。
+            允许的对象类型名，不依赖当前文档是否存在该类型的实例。
         """
         if self._doc is None:
             return []
         names: list[str] = []
         for obj_def in self._doc.objects:
             for f in obj_def.fields:
-                if object_list_name in f.references:
+                if object_list_name in f.class_references:
                     names.append(obj_def.name)
                     break
         return names
@@ -143,6 +143,7 @@ class IDDService:
                             "key_choices": f.key_choices,
                             "object_lists": f.object_lists,
                             "references": f.references,
+                            "class_references": f.class_references,
                             "minimum": f.minimum,
                             "minimum_greater": f.minimum_greater,
                             "maximum": f.maximum,
@@ -191,6 +192,7 @@ class IDDService:
                             key_choices=list(fd.get("key_choices", [])),
                             object_lists=list(fd.get("object_lists", [])),
                             references=list(fd.get("references", [])),
+                            class_references=list(fd.get("class_references", [])),
                             minimum=fd.get("minimum"),
                             minimum_greater=fd.get("minimum_greater"),
                             maximum=fd.get("maximum"),

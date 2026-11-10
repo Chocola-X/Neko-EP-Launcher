@@ -146,10 +146,7 @@ class IDFService:
         fdef: FieldDef,
     ) -> None:
         if fdef.type in ("real", "integer"):
-            low = val.lower()
-            if fdef.autosizable and low == "autosize":
-                return
-            if fdef.autocalculatable and low == "autocalculate":
+            if fdef.accepts_automatic_value(val):
                 return
             try:
                 num = float(val)
@@ -256,7 +253,7 @@ class IDFService:
     @staticmethod
     def _build_reference_index(doc: IDFDocument, idd: IDDDocument | None) -> dict[str, set[str]]:
         """构建引用索引：object-list 名 → 提供该引用的对象名称集合。"""
-        index: dict[str, set[str]] = {}
+        index = IDFService._build_class_reference_index(idd)
         if idd is None:
             return index
         for obj in doc.objects:
@@ -272,6 +269,17 @@ class IDFService:
                 unquoted = val.strip("\"'")
                 for ref in fdef.references:
                     index.setdefault(ref, set()).add(unquoted)
+        return index
+
+    @staticmethod
+    def _build_class_reference_index(idd: IDDDocument | None) -> dict[str, set[str]]:
+        """按 IDD 定义收集类型名引用，与实例字段值的 reference 分开（R-10）。"""
+        index: dict[str, set[str]] = {}
+        if idd is not None:
+            for definition in idd.objects:
+                for field in definition.fields:
+                    for reference in field.class_references:
+                        index.setdefault(reference, set()).add(definition.name)
         return index
 
     def configure_outputs(self, doc: IDFDocument) -> None:
@@ -399,6 +407,7 @@ class IDFService:
         if any(i < 0 or i >= len(doc.objects) for i in selected):
             raise ValueError("对象选择已失效，请重新选择")
         if idd is not None:
+            class_index = self._build_class_reference_index(idd)
             providers: dict[tuple[str, str], set[int]] = {}
             for index, obj in enumerate(doc.objects):
                 definition = idd.get(obj.type_name)
@@ -419,6 +428,13 @@ class IDFService:
                 for index, value in enumerate(obj.fields):
                     field = definition.get_field(index)
                     if not field or not field.object_lists or not value.strip():
+                        continue
+                    # 类型引用声明合法设备种类，不指向待复制的实例（R-10）。
+                    if any(
+                        value.strip().strip("\"'").casefold()
+                        in {name.casefold() for name in class_index.get(reference, set())}
+                        for reference in field.object_lists
+                    ):
                         continue
                     matches: set[int] = set()
                     for reference in field.object_lists:

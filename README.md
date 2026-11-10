@@ -253,3 +253,10 @@ ENERGYPLUS_HOME=/path/to/EnergyPlus QT_QPA_PLATFORM=offscreen pytest tests/e2e -
 ### 配置错误高亮
 
 加载 IDD 后，打开文件、提交字段修改、粘贴及源码同步都会自动校验。存在问题的对象和类型行标红，相关属性输入框标红；悬停可查看必填、数值类型/范围、选项或缺失引用等具体原因，修正后高亮自动清除。工具栏「校验 IDF」仍可查看全部问题。此检查基于 IDD（R-2/R-10）；完整模拟诊断仍需运行 EnergyPlus 并查看错误结果。
+
+
+### 批量核查官方示例
+
+可使用 `python -m scripts.audit_examples --energyplus-home <EnergyPlus安装目录> --output-dir <新结果目录> --simulate`：递归静态校验全部 IDF，运行 30 个代表性模型的设计日模拟，并生成逐文件 JSON/CSV、中文报告及原始运行日志；省略 `--simulate` 只做静态校验。结果目录必须是新目录，`--workers` 控制并行数，`--timeout` 控制单例超时秒数。
+
+已修正 IDD `reference-class-name` 设备类型引用误报，以及 IDF 中 `Autosize` / `Autocalculate` 同义输入的误报（依据 R-10、官方 v9.4.0 `InputProcessing/IdfParser.cc`）。旧 IDD 缓存会自动失效并重建，重启应用、重开文件即可生效。静态检查尚未完整覆盖条件字段、宏和外部资源，提示应与 EnergyPlus 原始日志核对；设计日通过不代表全年模拟通过。
