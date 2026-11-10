@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QKeySequence, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -27,6 +28,12 @@ class IDFObjectTree(QWidget):
 
     objectSelected = Signal(object)
     objectActivated = Signal(object)
+    objectCopyRequested = Signal(object)
+    objectCopyJsonRequested = Signal(object)
+    objectCopyFieldsRequested = Signal(object)
+    objectPasteRequested = Signal()
+    objectDuplicateRequested = Signal(object)
+    objectDeleteRequested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,6 +57,8 @@ class IDFObjectTree(QWidget):
         self._tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tree.setHeaderHidden(True)
         self._tree.setAlternatingRowColors(True)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self._tree, 1)
 
         self._model = QStandardItemModel()
@@ -145,3 +154,57 @@ class IDFObjectTree(QWidget):
                     self._tree.setCurrentIndex(child.index())
                     self._tree.selectionModel().blockSignals(False)
                     return
+
+    def get_selected_object(self) -> IDFObject | None:
+        """获取当前选中的对象。"""
+        indexes = self._tree.selectionModel().selectedIndexes()
+        if not indexes:
+            return None
+        item = self._model.itemFromIndex(indexes[0])
+        return item.data(Qt.UserRole) if item is not None else None
+
+    def _show_context_menu(self, pos) -> None:
+        index = self._tree.indexAt(pos)
+        item = self._model.itemFromIndex(index) if index.isValid() else None
+        obj: IDFObject | None = item.data(Qt.UserRole) if item is not None else None
+
+        menu = QMenu(self)
+        if obj is not None:
+            act_copy = menu.addAction("复制对象 (Ctrl+C)")
+            act_copy.triggered.connect(lambda: self.objectCopyRequested.emit(obj))
+
+            act_copy_params = menu.addAction("复制参数列表")
+            act_copy_params.triggered.connect(lambda: self.objectCopyFieldsRequested.emit(obj))
+
+            act_copy_json = menu.addAction("复制为 JSON")
+            act_copy_json.triggered.connect(lambda: self.objectCopyJsonRequested.emit(obj))
+
+            menu.addSeparator()
+            act_dup = menu.addAction("创建对象副本")
+            act_dup.triggered.connect(lambda: self.objectDuplicateRequested.emit(obj))
+
+            act_del = menu.addAction("删除对象 (Delete)")
+            act_del.triggered.connect(lambda: self.objectDeleteRequested.emit(obj))
+
+            menu.addSeparator()
+
+        act_paste = menu.addAction("粘贴对象 (Ctrl+V)")
+        act_paste.triggered.connect(lambda: self.objectPasteRequested.emit())
+
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            if obj := self.get_selected_object():
+                self.objectCopyRequested.emit(obj)
+                event.accept()
+                return
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self.objectPasteRequested.emit()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Delete and (obj := self.get_selected_object()):
+            self.objectDeleteRequested.emit(obj)
+            event.accept()
+            return
+        super().keyPressEvent(event)

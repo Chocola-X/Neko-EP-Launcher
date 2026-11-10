@@ -52,3 +52,30 @@ def test_remove_and_append_preserves_unrelated_comments() -> None:
     out = IDFSerializer().serialize(doc)
     assert "! between" in out and "! end" in out
     assert IDFParser().parse_text(out).objects[0].name() == "B"
+
+
+def test_idf_service_object_manipulation() -> None:
+    from src.core.idf.models import IDFObject
+    from src.services.idf_service import IDFService
+
+    service = IDFService(IDFParser(), IDFSerializer())
+    objects = service.parse_objects("Zone, LivingRoom, 0;\nMaterial, Brick, Rough, 0.1;\n")
+    assert len(objects) == 2
+    assert objects[0].type_name == "Zone"
+    assert objects[1].type_name == "Material"
+
+    doc = service.parse("Zone, Z1, 0;\n")
+    assert len(doc.objects) == 1
+
+    service.add_object(doc, IDFObject("Zone", ["Z2", "90"]))
+    assert len(doc.objects) == 2
+    assert doc.objects[1].name() == "Z2"
+
+    dup = service.duplicate_object(doc, 1)
+    assert dup is not None
+    assert dup.name() == "Z2_Copy"
+    assert len(doc.objects) == 3
+
+    assert service.remove_object(doc, 0) is True
+    assert len(doc.objects) == 2
+    assert doc.objects[0].name() == "Z2"

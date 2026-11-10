@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QCompleter,
     QFormLayout,
@@ -43,6 +44,7 @@ class FieldEditPanel(QWidget):
 
     fieldEditRequested = Signal(int, str)
     structureEditRequested = Signal(bool)
+    batchFieldsEditRequested = Signal(list)
 
     def __init__(
         self,
@@ -102,10 +104,18 @@ class FieldEditPanel(QWidget):
         btn_layout = QHBoxLayout()
         self._btn_add = QPushButton("＋ 添加末尾字段")
         self._btn_del = QPushButton("－ 删除末尾字段")
+        self._btn_copy_params = QPushButton("📋 复制全部参数")
+        self._btn_paste_params = QPushButton("📥 粘贴覆盖参数")
+        self._btn_copy_params.setToolTip("将当前对象的所有字段参数复制到剪贴板，支持跨窗口粘贴")
+        self._btn_paste_params.setToolTip("从剪贴板读取参数并覆盖到当前对象的字段中")
         self._btn_add.clicked.connect(self._add_field)
         self._btn_del.clicked.connect(self._del_field)
+        self._btn_copy_params.clicked.connect(self._copy_all_params)
+        self._btn_paste_params.clicked.connect(self._paste_all_params)
         btn_layout.addWidget(self._btn_add)
         btn_layout.addWidget(self._btn_del)
+        btn_layout.addWidget(self._btn_copy_params)
+        btn_layout.addWidget(self._btn_paste_params)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -325,3 +335,30 @@ class FieldEditPanel(QWidget):
     def _del_field(self) -> None:
         if self._obj is not None:
             self.structureEditRequested.emit(False)
+
+    def _copy_all_params(self) -> None:
+        if self._obj is None:
+            return
+        text = ", ".join(self._obj.fields)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        self._hint.setText(f"已复制当前对象的 {len(self._obj.fields)} 个参数到剪贴板。")
+
+    def _paste_all_params(self) -> None:
+        if self._obj is None or not self.isEnabled():
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return
+        text = clipboard.text().strip()
+        if not text:
+            return
+        clean_text = text.rstrip(";").strip()
+        if "\n" in clean_text:
+            parts = [p.strip() for p in clean_text.splitlines() if p.strip()]
+        else:
+            parts = [p.strip() for p in clean_text.split(",")]
+        if parts:
+            self.batchFieldsEditRequested.emit(parts)
+            self._hint.setText(f"已从剪贴板粘贴覆盖 {len(parts)} 个参数。")

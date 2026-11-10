@@ -8,6 +8,10 @@ from __future__ import annotations
 import logging
 import logging.handlers
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.ui.main_window import MainWindow
 
 from src.core.idf.parser import IDFParser
 from src.core.idf.serializer import IDFSerializer
@@ -73,6 +77,7 @@ class Application:
         self.ep_runner = EPRunner()
         self.run_manager = RunManager(self.ep_runner, runs_dir)
         self.run_repository = RunRepository(runs_dir)
+        self._windows: list[MainWindow] = []
 
     def load_idd(self) -> None:
         """根据配置加载 IDD（启动时调用）。"""
@@ -88,3 +93,39 @@ class Application:
         from src.ui.theme import apply_theme
 
         apply_theme(self.config_service.config.theme)
+
+    def create_window(self, path: str | Path | None = None) -> MainWindow:
+        """创建并显示一个主窗口，纳入应用窗口列表管理。"""
+        from src.ui.main_window import MainWindow
+
+        window = MainWindow(
+            run_manager=self.run_manager,
+            idf_service=self.idf_service,
+            config_service=self.config_service,
+            idd_service=self.idd_service,
+            results_service=self.results_service,
+            run_repository=self.run_repository,
+        )
+        self._windows.append(window)
+        window.windowClosed.connect(self._unregister_window)
+        window.destroyed.connect(lambda *_: self._unregister_window(window))
+        window.newWindowRequested.connect(self._handle_new_window_requested)
+
+        if path:
+            window._open_file(str(path))
+        window.show()
+        return window
+
+    def _unregister_window(self, window: MainWindow) -> None:
+        """窗口销毁时从管理列表中注销。"""
+        if window in self._windows:
+            self._windows.remove(window)
+
+    def _handle_new_window_requested(self, path: str) -> None:
+        """响应窗口新建请求。"""
+        self.create_window(path if path else None)
+
+    @property
+    def windows(self) -> list[MainWindow]:
+        """返回当前所有活跃窗口列表（副本）。"""
+        return list(self._windows)

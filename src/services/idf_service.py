@@ -316,3 +316,51 @@ class IDFService:
             obj.fields.pop()
             obj.field_names = obj.field_names[: len(obj.fields)]
             obj.comments = obj.comments[: len(obj.fields)]
+
+    def parse_objects(self, text: str) -> list[IDFObject]:
+        """从 IDF 代码文本中解析出对象列表。"""
+        if not text.strip():
+            return []
+        try:
+            doc = self._parser.parse_text(text)
+            return list(doc.objects)
+        except Exception:
+            return []
+
+    def add_object(self, doc: IDFDocument, obj: IDFObject) -> None:
+        """向文档追加一个对象，重置源码区间以作为新增对象序列化。"""
+        new_obj = IDFObject(
+            type_name=obj.type_name,
+            fields=list(obj.fields),
+            field_names=list(obj.field_names),
+            comments=list(obj.comments),
+            source_start=-1,
+            source_end=-1,
+            field_spans=[],
+        )
+        doc.objects.append(new_obj)
+
+    def remove_object(self, doc: IDFDocument, object_index: int) -> bool:
+        """从文档中删除指定索引的对象。"""
+        if 0 <= object_index < len(doc.objects):
+            doc.objects.pop(object_index)
+            return True
+        return False
+
+    def duplicate_object(self, doc: IDFDocument, object_index: int) -> IDFObject | None:
+        """复制指定索引的对象并追加到文档。"""
+        if 0 <= object_index < len(doc.objects):
+            source = doc.objects[object_index]
+            copy_name = f"{source.name()}_Copy" if source.name() else ""
+            new_fields = list(source.fields)
+            if new_fields and copy_name:
+                new_fields[0] = copy_name
+            new_obj = IDFObject(
+                type_name=source.type_name,
+                fields=new_fields,
+                field_names=list(source.field_names),
+                comments=list(source.comments),
+            )
+            doc.objects.append(new_obj)
+            return new_obj
+        return None

@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -53,6 +54,9 @@ logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     """主窗口。"""
+
+    newWindowRequested = Signal(str)
+    windowClosed = Signal(object)
 
     def __init__(
         self,
@@ -99,9 +103,25 @@ class MainWindow(QMainWindow):
         self._act_new.setShortcut(QKeySequence.New)
         self._act_new.triggered.connect(self._new_file)
 
+        self._act_new_window = QAction("新建窗口", self)
+        self._act_new_window.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self._act_new_window.triggered.connect(lambda: self.newWindowRequested.emit(""))
+
         self._act_open = QAction("打开...", self)
         self._act_open.setShortcut(QKeySequence.Open)
         self._act_open.triggered.connect(lambda checked=False: self._open_file())
+
+        self._act_open_in_new_window = QAction("在新窗口中打开...", self)
+        self._act_open_in_new_window.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self._act_open_in_new_window.triggered.connect(self._open_in_new_window)
+
+        self._act_copy_object = QAction("复制选中对象", self)
+        self._act_copy_object.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self._act_copy_object.triggered.connect(self._copy_selected_object)
+
+        self._act_paste_object = QAction("粘贴对象", self)
+        self._act_paste_object.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self._act_paste_object.triggered.connect(self._paste_object_from_clipboard)
 
         self._act_save = QAction("保存", self)
         self._act_save.setShortcut(QKeySequence.Save)
@@ -211,8 +231,15 @@ class MainWindow(QMainWindow):
             self._history_view = None
 
         self._tree.objectSelected.connect(self._on_object_selected)
+        self._tree.objectCopyRequested.connect(self._copy_object)
+        self._tree.objectCopyJsonRequested.connect(self._copy_object_json)
+        self._tree.objectCopyFieldsRequested.connect(self._copy_object_fields)
+        self._tree.objectPasteRequested.connect(self._paste_object_from_clipboard)
+        self._tree.objectDuplicateRequested.connect(self._duplicate_object)
+        self._tree.objectDeleteRequested.connect(self._delete_object)
         self._field_panel.fieldEditRequested.connect(self._edit_field)
         self._field_panel.structureEditRequested.connect(self._resize_fields)
+        self._field_panel.batchFieldsEditRequested.connect(self._batch_edit_fields)
         self._tree.objectActivated.connect(
             lambda obj: self._editor_tabs.setCurrentWidget(self._editor)
         )
@@ -230,7 +257,10 @@ class MainWindow(QMainWindow):
 
         file_menu = mb.addMenu("文件(&F)")
         file_menu.addAction(self._act_new)
+        file_menu.addAction(self._act_new_window)
+        file_menu.addSeparator()
         file_menu.addAction(self._act_open)
+        file_menu.addAction(self._act_open_in_new_window)
         file_menu.addAction(self._act_open_example)
         file_menu.addAction(self._act_results)
         file_menu.addSeparator()
@@ -246,6 +276,9 @@ class MainWindow(QMainWindow):
         edit_menu = mb.addMenu("编辑(&E)")
         edit_menu.addAction(self._act_undo)
         edit_menu.addAction(self._act_redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self._act_copy_object)
+        edit_menu.addAction(self._act_paste_object)
         edit_menu.addSeparator()
         edit_menu.addAction(self._act_find)
         edit_menu.addSeparator()
@@ -273,6 +306,7 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         actions = [
+            (self._act_new_window, QStyle.SP_DesktopIcon, "新建程序窗口（Ctrl+Shift+N）"),
             (self._act_open, QStyle.SP_DialogOpenButton, "打开 IDF（Ctrl+O）"),
             (self._act_save, QStyle.SP_DialogSaveButton, "保存当前 IDF（Ctrl+S）"),
             (self._act_save_as, QStyle.SP_DialogSaveButton, "另存为新文件"),
@@ -546,11 +580,13 @@ class MainWindow(QMainWindow):
                 self._editor.setTextCursor(cursor)
         self._doc = doc
         self._sync_baseline = new_text
-        self._selected_object_index = index
+        target_idx = index if (0 <= index < len(doc.objects)) else (0 if doc.objects else None)
+        self._selected_object_index = target_idx
         self._tree.update_document(doc)
-        self._tree.select_object(doc.objects[index])
-        self._field_panel.set_document(doc)
-        self._field_panel.rebind_object(doc.objects[index])
+        if target_idx is not None and doc.objects:
+            self._tree.select_object(doc.objects[target_idx])
+            self._field_panel.set_document(doc)
+            self._field_panel.rebind_object(doc.objects[target_idx])
         if focused_widget is not None and focused_widget.isVisible():
             focused_widget.setFocus()
         self._update_editor_highlight()
@@ -811,4 +847,142 @@ class MainWindow(QMainWindow):
                 return
             self._run_manager.cancel()
         self._config.save()
+        self.windowClosed.emit(self)
         event.accept()
+
+    def _open_in_new_window(self) -> None:
+        """在新窗口打开所选的 IDF 文件。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "在新窗口中打开 IDF 文件", "", "IDF 文件 (*.idf);;所有文件 (*)"
+        )
+        if path:
+            self.newWindowRequested.emit(path)
+
+    def _copy_selected_object(self) -> None:
+        """复制当前选中的对象。"""
+        obj = self._tree.get_selected_object()
+        if obj is not None:
+            self._copy_object(obj)
+        else:
+            self.statusBar().showMessage("当前未选中任何对象", 3000)
+
+    def _copy_object(self, obj: IDFObject) -> None:
+        """将对象序列化为标准 IDF 字符串写入剪贴板。"""
+        text = self._idf_service.serialize_object(obj)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        name_desc = f" ({obj.name()})" if obj.name() else ""
+        self.statusBar().showMessage(f"已复制对象: {obj.type_name}{name_desc}", 3000)
+
+    def _copy_object_json(self, obj: IDFObject) -> None:
+        """将对象序列化为 JSON 字符串写入剪贴板。"""
+        import json
+
+        data = {
+            "type": obj.type_name,
+            "name": obj.name(),
+            "fields": obj.fields,
+        }
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(json.dumps(data, ensure_ascii=False, indent=2))
+        self.statusBar().showMessage(f"已复制对象 JSON: {obj.type_name}", 3000)
+
+    def _copy_object_fields(self, obj: IDFObject) -> None:
+        """将对象的各个字段以逗号分隔复制到剪贴板。"""
+        text = ", ".join(obj.fields)
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        self.statusBar().showMessage(f"已复制对象参数列表 ({len(obj.fields)}项)", 3000)
+
+    def _paste_object_from_clipboard(self) -> None:
+        """从剪贴板读取 IDF 代码或 JSON，解析并追加到当前模型。"""
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return
+        text = clipboard.text().strip()
+        if not text:
+            self.statusBar().showMessage("剪贴板内容为空", 3000)
+            return
+
+        objects = self._idf_service.parse_objects(text)
+        if not objects:
+            try:
+                import json
+
+                data = json.loads(text)
+                if isinstance(data, dict) and "type" in data and "fields" in data:
+                    objects = [IDFObject(data["type"], data["fields"])]
+            except Exception:
+                pass
+
+        if not objects:
+            self.statusBar().showMessage("剪贴板中未找到有效的 IDF 对象", 3000)
+            return
+
+        if self._doc is None:
+            self._doc = IDFDocument()
+
+        for obj in objects:
+            self._idf_service.add_object(self._doc, obj)
+
+        target = self._doc.objects[-1]
+        self._on_object_changed(target)
+        self._tree.select_object(target)
+        self._field_panel.set_object(target)
+        self.statusBar().showMessage(f"已成功粘贴 {len(objects)} 个对象并同步更新", 3000)
+
+    def _duplicate_object(self, obj: IDFObject) -> None:
+        """复制指定对象并在当前模型中创建副本。"""
+        if self._doc is None:
+            return
+        index = next((i for i, c in enumerate(self._doc.objects) if c is obj), None)
+        if index is not None:
+            new_obj = self._idf_service.duplicate_object(self._doc, index)
+            if new_obj:
+                self._on_object_changed(new_obj)
+                self._tree.select_object(new_obj)
+                self._field_panel.set_object(new_obj)
+                self.statusBar().showMessage(f"已创建对象副本: {new_obj.name()}", 3000)
+
+    def _delete_object(self, obj: IDFObject) -> None:
+        """删除指定对象并刷新界面。"""
+        if self._doc is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除对象「{obj.type_name} {obj.name()}」吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        index = next((i for i, c in enumerate(self._doc.objects) if c is obj), None)
+        if index is not None:
+            self._idf_service.remove_object(self._doc, index)
+            new_text = self._idf_service.serialize(self._doc)
+            self._doc = self._idf_service.parse(new_text, self._current_path)
+            self._sync_baseline = new_text
+            self._tree.set_document(self._doc)
+            self._field_panel.set_document(self._doc)
+            self._selected_object_index = 0 if self._doc.objects else None
+            sel_obj = self._doc.objects[0] if self._doc.objects else None
+            self._field_panel.set_object(sel_obj)
+            self._update_editor_highlight()
+            self._modified = True
+            self._status_modified.setText("[已修改]")
+            self._update_title()
+            self.statusBar().showMessage(f"已删除对象 {obj.type_name}", 3000)
+
+    def _batch_edit_fields(self, values: list[str]) -> None:
+        """批量覆盖当前选中的对象字段值。"""
+        if self._doc is None or self._selected_object_index is None:
+            return
+        for idx, val in enumerate(values):
+            with contextlib.suppress(Exception):
+                self._idf_service.update_field(self._doc, self._selected_object_index, idx, val)
+        self._on_object_changed(self._doc.objects[self._selected_object_index])
+        self._field_panel.set_object(self._doc.objects[self._selected_object_index])
+        self.statusBar().showMessage(f"已批量覆盖更新 {len(values)} 个参数", 3000)
