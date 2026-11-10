@@ -176,8 +176,8 @@ pytest tests/unit -q --cov=src/core --cov-fail-under=90
 ENERGYPLUS_HOME=/path/to/EnergyPlus QT_QPA_PLATFORM=offscreen pytest tests/e2e -m e2e -q
 ```
 
-### 分支与提交
-- 分支：`feature/<简述>` / `fix/<简述>` / `refactor/<简述>`，从 `master` 切出
+### 提交与迭代
+- 当前处于快速开发迭代阶段，允许破坏性更改而不考虑兼容层；新功能与修复直接在 `master` 分支迭代，无需独立切分支
 - 提交信息：`<类型>: <简述>`，类型 ∈ {feat, fix, refactor, test, docs, chore, perf}
 - 未经明确同意不提交、不推送
 
