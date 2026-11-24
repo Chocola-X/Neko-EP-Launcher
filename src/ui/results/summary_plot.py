@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.results.models import ReportTable
+from src.core.results.summary_chart import prepare_summary_chart
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,17 @@ class SummaryPlotView(QWidget):
         toolbar.addWidget(QLabel("数据列:"))
         toolbar.addWidget(self._column)
         self._btn_export = QPushButton("导出 PNG...")
+        self._btn_export.setEnabled(False)
         self._btn_export.clicked.connect(self._export_png)
         toolbar.addWidget(QLabel("图表类型:"))
         toolbar.addWidget(self._chart_type)
         toolbar.addWidget(self._btn_export)
         toolbar.addStretch()
         layout.addLayout(toolbar)
+
+        self._notice = QLabel()
+        self._notice.setWordWrap(True)
+        layout.addWidget(self._notice)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -93,60 +99,35 @@ class SummaryPlotView(QWidget):
     def _refresh_plot(self) -> None:
         """绘制选中表格的图表。"""
         self._figure.clear()
+        self._notice.clear()
+        self._btn_export.setEnabled(False)
         item = self._table_list.currentItem()
         if item is None:
             self._canvas.draw()
             return
         table: ReportTable = item.data(Qt.UserRole)
-        if not table.rows or not table.columns:
-            self._canvas.draw()
-            return
-
-        numeric_data = self._extract_numeric_data(table, max(0, self._column.currentIndex()))
-        if not numeric_data:
+        pie = self._chart_type.currentText() == "饼图"
+        try:
+            data = prepare_summary_chart(table, self._column.currentIndex(), pie=pie)
+        except ValueError as exc:
+            self._notice.setText(str(exc))
             self._canvas.draw()
             return
 
         ax = self._figure.add_subplot(111)
-        chart_type = self._chart_type.currentText()
-
-        labels = [d[0] for d in numeric_data]
-        values = [d[1] for d in numeric_data]
-
-        if chart_type == "柱状图":
-            ax.bar(range(len(labels)), values)
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-            ax.set_ylabel(self._column.currentText())
+        if pie:
+            ax.pie(data.values, labels=data.labels, autopct="%1.1f%%", startangle=90)
+            ax.set_title(f"{table.table_name} · {data.axis_label}")
         else:
-            positive_vals = [v for v in values if v > 0]
-            positive_labels = [labels[i] for i, v in enumerate(values) if v > 0]
-            if positive_vals:
-                ax.pie(positive_vals, labels=positive_labels, autopct="%1.1f%%", startangle=90)
-                ax.axis("equal")
+            ax.bar(range(len(data.labels)), data.values)
+            ax.set_xticks(range(len(data.labels)))
+            ax.set_xticklabels(data.labels, rotation=45, ha="right", fontsize=8)
+            ax.set_ylabel(data.axis_label)
+            ax.set_title(table.table_name)
 
-        ax.set_title(table.table_name)
         self._figure.tight_layout()
         self._canvas.draw()
-
-    @staticmethod
-    def _extract_numeric_data(table: ReportTable, column: int = 0) -> list[tuple[str, float]]:
-        """从表格中提取数值数据（行名 + 第一列数值）。"""
-        result: list[tuple[str, float]] = []
-        for i, row_name in enumerate(table.rows):
-            if i >= len(table.cells):
-                continue
-            for cell in table.cells[i][column : column + 1]:
-                val_str = cell.strip()
-                if "[" in val_str:
-                    val_str = val_str.split("[")[0].strip()
-                try:
-                    val = float(val_str)
-                    result.append((row_name, val))
-                    break
-                except ValueError:
-                    continue
-        return result
+        self._btn_export.setEnabled(True)
 
     def _export_png(self) -> None:
         """导出当前图表为 PNG。"""

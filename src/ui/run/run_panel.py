@@ -96,7 +96,7 @@ class RunPanel(QWidget):
         config_layout.addRow("运行 ID:", self._run_id)
 
         self._extra_args = QLineEdit(self._config.config.run_options)
-        self._extra_args.setPlaceholderText("例如: -r -p")
+        self._extra_args.setPlaceholderText("例如 -D -r -p experiment")
         config_layout.addRow("附加参数:", self._extra_args)
 
         self._analysis_outputs = QCheckBox("生成分析数据（仅在运行副本中启用 SQLite 与汇总）")
@@ -148,6 +148,8 @@ class RunPanel(QWidget):
 
     def start_run(self) -> bool:
         """启动运行，返回是否成功提交。"""
+        if self._run_manager.is_running:
+            return False
         if not self._idf_path:
             QMessageBox.warning(self, "警告", "请先选择 IDF 文件")
             return False
@@ -156,8 +158,6 @@ class RunPanel(QWidget):
             QMessageBox.warning(self, "警告", "未找到 EnergyPlus 可执行文件，请检查设置")
             return False
         wf = self._weather.currentText().strip()
-        if wf and not Path(wf).exists():
-            wf = ""
         run_id = self._run_id.text().strip()
         extra = self._extra_args.text().strip()
         self._config.config.enhanced_report = self._enhanced_report.isChecked()
@@ -173,6 +173,8 @@ class RunPanel(QWidget):
             analysis_outputs=self._analysis_outputs.isChecked(),
         )
         result = self._run_manager.start(ep_exe, request)
+        if result is None:
+            self._report_for_run = False
         return result is not None
 
     def _pick_idf(self) -> None:
@@ -244,8 +246,13 @@ class RunPanel(QWidget):
             self._status.setText("就绪")
 
     def _on_finished(self, result: RunResult) -> None:
+        generate_report = self._report_for_run
+        self._report_for_run = False
+        if result.cancelled:
+            self._status.setText("已取消")
+            return
         self.runFinished.emit(result)
-        if self._report_for_run:
+        if result.success and generate_report:
             self.reportRequested.emit(result.run_dir)
         if result.success:
             QMessageBox.information(
@@ -257,7 +264,8 @@ class RunPanel(QWidget):
             QMessageBox.warning(
                 self,
                 "运行失败",
-                f"EnergyPlus 运行失败 (退出码: {result.exit_code})\n请查看日志和 .err 文件",
+                result.error_message
+                or f"EnergyPlus 运行失败 (退出码: {result.exit_code})\n请查看日志和 .err 文件",
             )
 
     def _on_error(self, msg: str) -> None:

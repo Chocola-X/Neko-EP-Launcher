@@ -1,15 +1,13 @@
 """运行编排服务。
 
-负责准备运行目录（复制 IDF/EPW，同名追加后缀而非删除）、调用 ``EPRunner``、
-运行结束归档写 ``run.json``。禁止 ``shutil.rmtree`` 删除历史目录。
+每个窗口拥有独立实例。该实例为任务占用归档目录、冻结输入、启动引擎，
+并在任务结束后记录实际命令及输出。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +16,12 @@ from PySide6.QtCore import QObject, Signal
 
 from src.core.entities.run_options import RunOptions
 from src.services.ep_runner import EPRunner, RunResult
-from src.services.idf_service import IDFService
+from src.services.run_preparation import (
+    freeze_inputs,
+    plan_run,
+    read_engine_version,
+    validate_archive_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ class RunRequest:
     Attributes:
         idf_path: IDF 文件路径。
         weather_path: 天气文件路径（可空）。
-        run_id: 运行标识（空则用时间戳）。
+        run_id: 归档目录名称（空则用时间戳）。
         extra_args: 附加命令行参数。
         options: 结构化运行选项（优先于 extra_args）。
         analysis_outputs: 在运行副本中启用 SQLite 与汇总输出。
@@ -73,7 +76,8 @@ class RunManager(QObject):
         super().__init__(parent)
         self._runner = runner
         self._runs_dir = Path(runs_dir)
-        self._runs_dir.mkdir(parents=True, exist_ok=True)
+        self._inputs: list[dict[str, str]] = []
+        self._engine_version = ""
         self._runner.lineOutput.connect(self.lineOutput)
         self._runner.stateChanged.connect(self.stateChanged)
         self._runner.finished.connect(self._on_finished)
@@ -103,98 +107,98 @@ class RunManager(QObject):
         Returns:
             RunResult 或 None（参数错误）。
         """
-        idf_path = Path(request.idf_path)
-        if not idf_path.exists():
-            self.error.emit(f"无效的 IDF 文件: {request.idf_path}")
+        if self.is_running:
+            self.error.emit("此窗口已有运行任务")
             return None
-
-        run_id = request.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = self._make_unique_dir(run_id)
-        run_dir.mkdir(parents=True)
-
-        idf_dest = run_dir / idf_path.name
-        shutil.copy2(idf_path, idf_dest)
-        if request.analysis_outputs:
-            try:
-                service = IDFService()
-                document = service.open(idf_dest)
-                service.configure_outputs(document)
-                service.save(document, idf_dest)
-            except Exception as exc:
-                logger.exception("配置运行副本分析输出失败")
-                self.error.emit(f"配置分析输出失败: {exc}")
+        try:
+            run_id = request.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+            validate_archive_name(run_id, "运行 ID")
+            options = request.options or RunOptions.from_extra_args(request.extra_args)
+            preparation = plan_run(
+                ep_executable,
+                request.idf_path,
+                request.weather_path,
+                options,
+                analysis_outputs=request.analysis_outputs,
+            )
+            self._engine_version = read_engine_version(preparation.executable)
+            run_dir = self._create_run_dir(run_id)
+            work_dir = run_dir / "inputs"
+            self._inputs = freeze_inputs(preparation, work_dir)
+            result = self._runner.run(
+                ep_executable=str(preparation.executable),
+                run_dir=run_dir,
+                idf_filename=f"./{preparation.model.destination.as_posix()}",
+                run_options=preparation.options,
+                working_directory=work_dir,
+                source_idf_path=str(preparation.model.source),
+            )
+            if result is None:
+                self._inputs = []
                 return None
-
-        weather_filename = ""
-        if request.weather_path and Path(request.weather_path).exists():
-            wf_dest = run_dir / Path(request.weather_path).name
-            shutil.copy2(request.weather_path, wf_dest)
-            weather_filename = wf_dest.name
-
-        result = self._runner.run(
-            ep_executable=ep_executable,
-            run_dir=run_dir,
-            idf_filename=idf_dest.name,
-            weather_filename=weather_filename,
-            extra_args=request.extra_args,
-            run_options=request.options,
-        )
-        if result is None:
+            if self.is_running:
+                self.runStarted.emit(result.run_id)
+            return result
+        except Exception as exc:
+            self._inputs = []
+            logger.warning("运行准备失败：%s", exc)
+            self.error.emit(f"运行准备失败：{exc}")
             return None
-        self.runStarted.emit(result.run_id)
-        return result
 
-    def _make_unique_dir(self, run_id: str) -> Path:
-        """生成唯一运行目录，同名时追加 _1/_2 后缀，禁止删除已有目录。"""
-        base = self._runs_dir / run_id
-        if not base.exists():
-            return base
-        n = 1
+    def _create_run_dir(self, run_id: str) -> Path:
+        """在实际归档根下原子占用目录名，跳过所有已存在条目。"""
+        root = self._runs_dir.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        suffix = 0
         while True:
-            cand = self._runs_dir / f"{run_id}_{n}"
-            if not cand.exists():
-                return cand
-            n += 1
+            candidate = root / (f"{run_id}_{suffix}" if suffix else run_id)
+            try:
+                candidate.mkdir()
+            except FileExistsError:
+                suffix += 1
+            else:
+                return candidate
 
     def _on_finished(self, result: RunResult) -> None:
-        self._write_run_json(result)
+        inputs, self._inputs = self._inputs, []
+        self._write_run_json(result, inputs)
         self.runFinished.emit(result)
 
-    def _write_run_json(self, result: RunResult) -> None:
-        """运行结束写 run.json 元数据。"""
+    def _write_run_json(self, result: RunResult, inputs: list[dict[str, str]]) -> None:
+        """写入实际命令、启动前输入哈希与输出文件清单。"""
         run_dir = Path(result.run_dir)
-        meta = {
-            "run_id": result.run_id,
-            "start_time": result.start_time,
-            "end_time": result.end_time,
-            "elapsed": result.elapsed,
-            "exit_code": result.exit_code,
-            "success": result.success,
-            "command": result.command,
-            "idf_path": result.idf_path,
-            "weather_path": result.weather_path,
-            "idf_sha256": self._file_sha256(result.idf_path),
-            "weather_sha256": self._file_sha256(result.weather_path) if result.weather_path else "",
-            "output_files": self._list_output_files(run_dir),
-        }
         try:
-            (run_dir / "run.json").write_text(
-                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-        except OSError as e:
-            logger.warning("写入 run.json 失败: %s", e)
-
-    @staticmethod
-    def _file_sha256(path: str) -> str:
-        """计算文件 SHA256，失败返回空串。"""
-        try:
-            h = hashlib.sha256()
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    h.update(chunk)
-            return h.hexdigest()
-        except OSError:
-            return ""
+            hashes = {item["kind"]: item["sha256"] for item in inputs if item["kind"] != "dependency"}
+            meta = {
+                "run_id": result.run_id,
+                "task_id": result.task_id,
+                "start_time": result.start_time,
+                "end_time": result.end_time,
+                "elapsed": result.elapsed,
+                "exit_code": result.exit_code,
+                "success": result.success,
+                "cancelled": result.cancelled,
+                "error_message": result.error_message,
+                "command": result.command,
+                "command_args": result.command_args,
+                "engine_version": self._engine_version,
+                "output_directory": str(run_dir),
+                "working_directory": result.working_directory,
+                "idf_path": result.idf_path,
+                "weather_path": result.weather_path,
+                "idd_path": result.idd_path,
+                "idf_sha256": hashes.get("idf", ""),
+                "weather_sha256": hashes.get("weather", ""),
+                "idd_sha256": hashes.get("idd", ""),
+                "inputs": inputs,
+                "output_files": self._list_output_files(run_dir),
+            }
+            temp = run_dir / ".run.json.tmp"
+            temp.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+            temp.replace(run_dir / "run.json")
+        except OSError as exc:
+            logger.warning("写入 run.json 失败: %s", exc)
+            self.error.emit(f"运行结束，但归档元数据写入失败：{exc}")
 
     @staticmethod
     def _list_output_files(run_dir: Path) -> list[dict[str, object]]:
@@ -203,6 +207,6 @@ class RunManager(QObject):
         if not run_dir.exists():
             return files
         for entry in sorted(run_dir.iterdir()):
-            if entry.is_file() and entry.name not in ("run.json",):
+            if entry.is_file() and entry.name not in {"run.json", ".run.json.tmp"}:
                 files.append({"name": entry.name, "size": entry.stat().st_size})
         return files

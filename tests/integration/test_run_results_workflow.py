@@ -9,8 +9,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from src.app import Application
-from src.services.ep_runner import RunResult
+from src.services.ep_runner import EPRunner, RunResult
 from src.services.results_service import ResultsService
+from src.services.run_manager import RunManager
 from src.ui.main_window import MainWindow
 from src.ui.results.results_view import ResultsView
 
@@ -25,8 +26,9 @@ def workflow(qtbot, tmp_path, monkeypatch):
     executable.touch()
     (executable.parent / "Energy+.idd").touch()
     container.config_service.config.energyplus_path = str(executable.parent)
+    runner = EPRunner()
     window = MainWindow(
-        container.run_manager,
+        RunManager(runner, tmp_path / "runs"),
         container.idf_service,
         container.config_service,
         results_service=container.results_service,
@@ -37,12 +39,12 @@ def workflow(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args))
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: messages.append(args))
     window.show()
-    yield container, window, messages
+    yield runner, window, messages
     qtbot.waitUntil(lambda: not window._results_workspace._timeseries_plot._jobs, timeout=10000)
     qtbot.waitUntil(lambda: window._results_workspace._report_job is None, timeout=10000)
 
 
-def finish_run(container, directory: Path, success=True) -> RunResult:
+def finish_run(runner, directory: Path, success=True) -> RunResult:
     result = RunResult(
         directory.name,
         str(directory),
@@ -50,15 +52,15 @@ def finish_run(container, directory: Path, success=True) -> RunResult:
         success=success,
         exit_code=0 if success else 1,
     )
-    container.ep_runner.finished.emit(result)
+    runner.finished.emit(result)
     return result
 
 
 def test_completed_run_populates_only_main_analysis(workflow, qtbot, tmp_path) -> None:
-    container, window, messages = workflow
+    runner, window, messages = workflow
     directory = tmp_path / "complete"
     shutil.copytree(FIXTURES / "test_run_001", directory)
-    finish_run(container, directory)
+    finish_run(runner, directory)
     view = window._results_workspace
     assert window.findChildren(ResultsView) == [view]
     assert not window._run_panel.findChildren(ResultsView)
@@ -73,11 +75,11 @@ def test_completed_run_populates_only_main_analysis(workflow, qtbot, tmp_path) -
 
 
 def test_html_only_previous_run_and_missing_sql_notice(workflow, tmp_path) -> None:
-    container, window, _ = workflow
+    runner, window, _ = workflow
     directory = tmp_path / "html-only"
     directory.mkdir()
     shutil.copyfile(FIXTURES / "eplustbl-html-only.htm", directory / "eplustbl.htm")
-    finish_run(container, directory)
+    finish_run(runner, directory)
     view = window._results_workspace
     assert view._summary_view._report_list.count() == 2
     assert view._tabs.currentWidget() is view._summary_view
@@ -88,16 +90,16 @@ def test_html_only_previous_run_and_missing_sql_notice(workflow, tmp_path) -> No
 
 
 def test_failed_run_replaces_old_results_with_diagnostics(workflow, tmp_path, qtbot) -> None:
-    container, window, _ = workflow
+    runner, window, _ = workflow
     directory = tmp_path / "complete"
     shutil.copytree(FIXTURES / "test_run_001", directory)
-    finish_run(container, directory)
+    finish_run(runner, directory)
     view = window._results_workspace
     # 允许上次查询仍在途，切换后不能把旧数据写回。
     directory = tmp_path / "failed"
     directory.mkdir()
     (directory / "eplusout.err").write_text("   ** Fatal ** Bad model input\n")
-    finish_run(container, directory, success=False)
+    finish_run(runner, directory, success=False)
     qtbot.waitUntil(lambda: not view._timeseries_plot._jobs, timeout=10000)
     assert view._run_dir == str(directory)
     assert view._error_view._table.rowCount() == 1
@@ -113,7 +115,7 @@ def test_failed_run_replaces_old_results_with_diagnostics(workflow, tmp_path, qt
 def test_run_button_prepares_copy_and_remembers_option(
     workflow, monkeypatch, tmp_path, qtbot, analysis_outputs
 ) -> None:
-    container, window, _ = workflow
+    runner, window, _ = workflow
     source = tmp_path / "input.idf"
     original = "! 原始模型\nVersion, 9.4;\nZone, Z;\nOutput:SQLite, Simple;\n"
     source.write_text(original)
@@ -126,30 +128,31 @@ def test_run_button_prepares_copy_and_remembers_option(
         captured.append(kwargs)
         return RunResult("run", str(kwargs["run_dir"]), str(source))
 
-    monkeypatch.setattr(container.ep_runner, "run", run)
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr("src.services.run_manager.read_engine_version", lambda _: "EnergyPlus 9.4")
     window._show_run_config()
     qtbot.mouseClick(window._run_panel._btn_run, Qt.LeftButton)
     assert len(captured) == 1
     assert source.read_text() == original
-    copy = captured[0]["run_dir"] / source.name
-    doc = container.idf_service.open(copy)
+    copy = captured[0]["working_directory"] / source.name
+    doc = window._idf_service.open(copy)
     assert doc.get_objects_by_type("Output:SQLite")[0].fields == [
         "SimpleAndTabular" if analysis_outputs else "Simple"
     ]
     assert len(doc.get_objects_by_type("Output:SQLite")) == 1
     assert bool(doc.get_objects_by_type("Output:Table:SummaryReports")) == analysis_outputs
-    container.config_service.reload()
-    assert container.config_service.config.analysis_outputs == analysis_outputs
+    window._config.reload()
+    assert window._config.config.analysis_outputs == analysis_outputs
 
 
 def test_automatic_report_uses_main_workspace(workflow, tmp_path, qtbot) -> None:
-    container, window, _ = workflow
+    runner, window, _ = workflow
     directory = tmp_path / "reported"
     directory.mkdir()
     shutil.copyfile(FIXTURES / "eplustbl-html-only.htm", directory / "eplustbl.htm")
     # 与 start_run 保存的运行选项一致，完成信号从真实运行器进入。
     window._run_panel._report_for_run = True
-    finish_run(container, directory)
+    finish_run(runner, directory)
     view = window._results_workspace
     qtbot.waitUntil(lambda: view._report_job is None, timeout=10000)
     assert (directory / "enhanced-report.html").is_file()
@@ -158,11 +161,11 @@ def test_automatic_report_uses_main_workspace(workflow, tmp_path, qtbot) -> None
 
 
 def test_history_opens_main_workspace(workflow, tmp_path) -> None:
-    container, window, _ = workflow
+    runner, window, _ = workflow
     directory = tmp_path / "runs" / "previous"
-    directory.mkdir()
+    directory.mkdir(parents=True)
     shutil.copyfile(FIXTURES / "eplustbl-html-only.htm", directory / "eplustbl.htm")
-    finish_run(container, directory)
+    finish_run(runner, directory)
     history = window._history_view
     history._table.setCurrentCell(0, 0)
     window._editor_tabs.setCurrentWidget(window._editor)
@@ -172,11 +175,11 @@ def test_history_opens_main_workspace(workflow, tmp_path) -> None:
 
 
 def test_loading_error_is_visible(workflow, monkeypatch, tmp_path) -> None:
-    container, _window, messages = workflow
+    runner, window, messages = workflow
     monkeypatch.setattr(
-        container.results_service, "load_tables", Mock(side_effect=ValueError("bad"))
+        window._results_service, "load_tables", Mock(side_effect=ValueError("bad"))
     )
-    finish_run(container, tmp_path)
+    finish_run(runner, tmp_path)
     assert any("结果加载失败" in str(message) and "bad" in str(message) for message in messages)
 
 
@@ -214,13 +217,13 @@ def test_html_report_ambiguity_and_read_failure(tmp_path, monkeypatch) -> None:
 def test_bad_run_copy_configuration_does_not_launch(workflow, tmp_path, monkeypatch) -> None:
     from src.services.run_manager import RunRequest
 
-    container, _window, _messages = workflow
+    runner, window, _messages = workflow
     source = tmp_path / "broken.idf"
     source.write_text("Zone, incomplete")
     launch = Mock()
-    monkeypatch.setattr(container.ep_runner, "run", launch)
+    monkeypatch.setattr(runner, "run", launch)
     assert (
-        container.run_manager.start("energyplus", RunRequest(str(source), analysis_outputs=True))
+        window._run_manager.start(window._config.get_ep_executable(), RunRequest(str(source), analysis_outputs=True))
         is None
     )
     launch.assert_not_called()

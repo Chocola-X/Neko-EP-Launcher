@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from src.app import Application
-from src.ui.main_window import MainWindow
 from src.ui.results.results_view import ResultsView
 
 
@@ -28,18 +27,10 @@ def test_official_example_analysis(qtbot, tmp_path, monkeypatch, arguments) -> N
     messages = []
     monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args))
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: messages.append(args))
-    window = MainWindow(
-        container.run_manager,
-        container.idf_service,
-        container.config_service,
-        results_service=container.results_service,
-        run_repository=container.run_repository,
-    )
+    window = container.create_window(example)
     qtbot.addWidget(window)
-    window.show()
-    window._open_file(str(example))
     window._show_run_config()
-    with qtbot.waitSignal(container.run_manager.runFinished, timeout=120000) as completed:
+    with qtbot.waitSignal(window._run_manager.runFinished, timeout=120000) as completed:
         qtbot.mouseClick(window._run_panel._btn_run, Qt.LeftButton)
     result = completed.args[0]
     assert result.success, result.log_text

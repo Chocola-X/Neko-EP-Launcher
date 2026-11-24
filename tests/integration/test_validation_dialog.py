@@ -40,7 +40,7 @@ def test_validation_entry_uses_resizable_dialog(qtbot, tmp_path, monkeypatch) ->
         ValidationDialog, "exec", lambda self: shown.append(self._text.toPlainText()) or 0
     )
     app = Application(tmp_path / "config.json", tmp_path / "runs")
-    window = MainWindow(app.run_manager, app.idf_service, app.config_service, app.idd_service)
+    window = MainWindow(app.create_run_manager(), app.idf_service, app.config_service, app.idd_service)
     qtbot.addWidget(window, before_close_func=lambda widget: setattr(widget, "_modified", False))
     window._editor.setPlainText("Zone, A;")
     window._validate_idf()

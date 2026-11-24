@@ -62,7 +62,8 @@ Neko-EP-Launcher/
     │   ├── idd_service.py          # IDD 元数据缓存与检索
     │   ├── results_service.py      # 结果文件结构化解析编排
     │   ├── ep_runner.py            # EnergyPlus 进程管理（QProcess 非阻塞）
-    │   └── run_manager.py          # 模拟运行准备、归档与元数据记录
+    │   ├── run_manager.py          # 窗口独立的运行调度与结果归档
+    │   └── run_preparation.py      # 实际参数校验、文件依赖解析与输入快照
     ├── persistence/                # 持久化层：读写磁盘配置与 runs 历史目录
     ├── ui/                         # 表现层：基于 PySide6，仅负责交互与渲染
     │   ├── main_window.py          # 主工作区与多窗口调度
@@ -73,6 +74,12 @@ Neko-EP-Launcher/
     │   └── theme.py                # 原生系统主题与调色板
     └── app.py                      # 依赖注入容器与多窗口生命周期管理根
 ```
+
+### 运行与汇总图回归
+
+`Application` 为每个窗口装配独立的 `RunManager` 和 `EPRunner`。同一窗口只接受一个在途任务，任务结果通过不可变的 `RunResult` 传递。关闭任务所属窗口时，确认取消后等待进程终态和归档完成。`run_preparation` 在创建归档前校验实际参数与依赖。工作目录及元数据见[运行输入与归档](output_files.md#运行输入与归档)。
+
+`core/results/summary_chart.py` 校验报表语义、分项层级和单位，界面使用相同的数据绘制和导出。真实结果样本验证年度汇总中的室外照明用电为 82.42 GJ、占比为 100%。
 
 ### 依赖规则门禁
 1. **`src/core/` 零 GUI 依赖**：严禁 `import PySide6`，严禁产生磁盘 I/O 或网络副作用。
@@ -103,6 +110,10 @@ pytest tests/integration -q --cov=src/services --cov-fail-under=70
 
 # 本地完整模拟链端到端验证（需本地安装 EnergyPlus）
 ENERGYPLUS_HOME=/path/to/EnergyPlus QT_QPA_PLATFORM=offscreen pytest tests/e2e -m e2e -q
+
+# 验证 Schedule:File 快照及移走源文件后的重跑
+ENERGYPLUS_HOME=/path/to/EnergyPlus QT_QPA_PLATFORM=offscreen \
+  pytest tests/e2e/test_archived_file_schedule.py -m e2e -q
 ```
 
 ---

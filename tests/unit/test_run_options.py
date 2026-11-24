@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.core.entities.run_options import OutputSuffix, RunOptions
 
 
@@ -76,8 +78,8 @@ class TestRunOptions:
         assert opts.output_suffix == OutputSuffix.CAMELCASE
 
     def test_from_extra_args_invalid_suffix(self) -> None:
-        opts = RunOptions.from_extra_args("-s X")
-        assert opts.output_suffix is None
+        with pytest.raises(ValueError, match="命名风格"):
+            RunOptions.from_extra_args("-s X")
 
     def test_roundtrip(self) -> None:
         opts = RunOptions(annual=True, readvars=True, weather_path="w.epw")

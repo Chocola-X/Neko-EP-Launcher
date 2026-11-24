@@ -74,8 +74,7 @@ class Application:
         self.idf_service = IDFService(IDFParser(), IDFSerializer())
         self.idd_service = IDDService(IDD_CACHE)
         self.results_service = ResultsService()
-        self.ep_runner = EPRunner()
-        self.run_manager = RunManager(self.ep_runner, runs_dir)
+        self._runs_dir = Path(runs_dir)
         self.run_repository = RunRepository(runs_dir)
         self._windows: list[MainWindow] = []
 
@@ -94,27 +93,41 @@ class Application:
 
         apply_theme(self.config_service.config.theme)
 
+    def create_run_manager(self) -> RunManager:
+        """为一个窗口创建专属运行管理器和进程。"""
+        runner = EPRunner()
+        manager = RunManager(runner, self._runs_dir)
+        runner.setParent(manager)
+        return manager
+
     def create_window(self, path: str | Path | None = None) -> MainWindow:
         """创建并显示一个主窗口，纳入应用窗口列表管理。"""
         from src.ui.main_window import MainWindow
 
+        manager = self.create_run_manager()
         window = MainWindow(
-            run_manager=self.run_manager,
+            run_manager=manager,
             idf_service=self.idf_service,
             config_service=self.config_service,
             idd_service=self.idd_service,
             results_service=self.results_service,
             run_repository=self.run_repository,
         )
+        manager.setParent(window)
         self._windows.append(window)
         window.windowClosed.connect(self._unregister_window)
         window.destroyed.connect(lambda *_: self._unregister_window(window))
         window.newWindowRequested.connect(self._handle_new_window_requested)
+        window.quitRequested.connect(self._close_windows)
 
         if path:
             window._open_file(str(path))
         window.show()
         return window
+
+    def _close_windows(self) -> None:
+        for window in self.windows:
+            window.close()
 
     def _unregister_window(self, window: MainWindow) -> None:
         """窗口销毁时从管理列表中注销。"""

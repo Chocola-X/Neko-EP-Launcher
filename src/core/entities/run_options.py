@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -117,7 +117,7 @@ class RunOptions:
 
     @classmethod
     def from_extra_args(cls, extra: str) -> RunOptions:
-        """从附加参数字符串解析（简单空格分隔）。
+        """从附加参数字符串解析，支持带引号的路径。
 
         Args:
             extra: 附加参数字符串（如 ``"-r -p myprefix"``）。
@@ -128,41 +128,39 @@ class RunOptions:
         opts = cls()
         if not extra:
             return opts
-        parts = extra.split()
-        i = 0
-        while i < len(parts):
-            p = parts[i]
-            if p in ("-a", "--annual"):
-                opts.annual = True
-            elif p in ("-D", "--design-day"):
-                opts.design_day = True
-            elif p in ("-m", "--epmacro"):
-                opts.epmacro = True
-            elif p in ("-r", "--readvars"):
-                opts.readvars = True
-            elif p in ("-x", "--expandobjects"):
-                opts.expandobjects = True
-            elif p in ("-c", "--convert"):
-                opts.convert = True
-            elif p == "--convert-only":
-                opts.convert_only = True
-            elif p in ("-p", "--output-prefix") and i + 1 < len(parts):
-                opts.output_prefix = parts[i + 1]
-                i += 1
-            elif p in ("-d", "--output-directory") and i + 1 < len(parts):
-                opts.output_directory = parts[i + 1]
-                i += 1
-            elif p in ("-i", "--idd") and i + 1 < len(parts):
-                opts.idd_path = parts[i + 1]
-                i += 1
-            elif p in ("-w", "--weather") and i + 1 < len(parts):
-                opts.weather_path = parts[i + 1]
-                i += 1
-            elif p in ("-s", "--output-suffix") and i + 1 < len(parts):
-                with contextlib.suppress(ValueError):
-                    opts.output_suffix = OutputSuffix(parts[i + 1])
-                i += 1
+        flags = {
+            "-a": "annual", "--annual": "annual",
+            "-D": "design_day", "--design-day": "design_day",
+            "-m": "epmacro", "--epmacro": "epmacro",
+            "-r": "readvars", "--readvars": "readvars",
+            "-x": "expandobjects", "--expandobjects": "expandobjects",
+            "-c": "convert", "--convert": "convert",
+            "--convert-only": "convert_only",
+        }
+        arguments = {
+            "-p": "output_prefix", "--output-prefix": "output_prefix",
+            "-d": "output_directory", "--output-directory": "output_directory",
+            "-i": "idd_path", "--idd": "idd_path",
+            "-w": "weather_path", "--weather": "weather_path",
+            "-s": "output_suffix", "--output-suffix": "output_suffix",
+        }
+        parts = iter(shlex.split(extra))
+        for part in parts:
+            flag, equals, value = part.partition("=")
+            if flag in flags and not equals:
+                setattr(opts, flags[flag], True)
+            elif flag in arguments:
+                if not equals:
+                    value = next(parts, "")
+                if not value or value.startswith("-"):
+                    raise ValueError(f"参数 {flag} 缺少有效值")
+                if arguments[flag] == "output_suffix":
+                    try:
+                        opts.output_suffix = OutputSuffix(value)
+                    except ValueError:
+                        raise ValueError("输出命名风格必须为 L、C 或 D") from None
+                else:
+                    setattr(opts, arguments[flag], value)
             else:
-                opts.extra_args.append(p)
-            i += 1
+                opts.extra_args.append(part)
         return opts

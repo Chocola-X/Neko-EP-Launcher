@@ -16,7 +16,7 @@ from src.ui.theme import apply_theme
 def window(qtbot, tmp_path: Path):
     container = Application(tmp_path / "config.json", tmp_path / "runs")
     window = MainWindow(
-        container.run_manager,
+        container.create_run_manager(),
         container.idf_service,
         container.config_service,
         container.idd_service,
@@ -138,8 +138,7 @@ def test_choice_editor_keeps_focus_until_commit(window, qtbot, tmp_path) -> None
 
 def test_field_structure_and_delimiter_value(window, qtbot) -> None:
     service = window._idf_service
-    service.update_field(window._doc, 0, 0, "Name, with comma")
-    window._on_object_changed(window._doc.objects[0])
+    window._edit_field(0, "Name, with comma")
     assert window._doc.objects[0].name() == '"Name, with comma"'
     assert window._field_panel._table.cellWidget(0, 2).text() == '"Name, with comma"'
     before = len(window._doc.objects[0].fields)

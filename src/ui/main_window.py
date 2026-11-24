@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPalette, QTextCursor
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
     """主窗口。"""
 
     newWindowRequested = Signal(str)
+    quitRequested = Signal()
     windowClosed = Signal(object)
 
     def __init__(
@@ -72,6 +74,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 700)
 
         self._run_manager = run_manager
+        self._close_after_run = False
         self._idf_service = idf_service
         self._config = config_service
         self._idd_service = idd_service
@@ -132,7 +135,7 @@ class MainWindow(QMainWindow):
 
         self._act_quit = QAction("退出", self)
         self._act_quit.setShortcut(QKeySequence.Quit)
-        self._act_quit.triggered.connect(self.close)
+        self._act_quit.triggered.connect(self.quitRequested)
 
         self._act_undo = QAction("撤销", self)
         self._act_undo.setShortcut(QKeySequence.Undo)
@@ -249,6 +252,7 @@ class MainWindow(QMainWindow):
         self._run_panel.runRequested.connect(self._run_current)
         self._editor.textChanged.connect(self._on_text_changed)
         self._results_workspace.outputRequested.connect(self._add_output)
+        self._run_manager.runFinished.connect(self._close_when_run_finished)
         self._run_panel.runFinished.connect(self._on_run_finished)
         self._run_panel.reportRequested.connect(self._generate_run_report)
 
@@ -415,6 +419,7 @@ class MainWindow(QMainWindow):
         self._editor.clear()
         self._doc = IDFDocument()
         self._current_path = ""
+        self._run_panel.set_idf("")
         self._modified = False
         self._tree.set_document(self._doc)
         self._field_panel.set_document(self._doc)
@@ -589,10 +594,10 @@ class MainWindow(QMainWindow):
         if self._doc is None or self._selected_object_index is None:
             return
         try:
-            self._idf_service.update_field(
-                self._doc, self._selected_object_index, field_index, value
-            )
-            self._on_object_changed(self._doc.objects[self._selected_object_index])
+            index = self._selected_object_index
+            draft = self._draft_document()
+            self._idf_service.update_field(draft, index, field_index, value)
+            self._commit_document(draft, index)
         except Exception as exc:
             QMessageBox.warning(self, "属性修改失败", str(exc))
 
@@ -601,19 +606,31 @@ class MainWindow(QMainWindow):
             return
         try:
             self._field_panel.commit_pending()
-            self._idf_service.resize_fields(self._doc, self._selected_object_index, append)
-            self._on_object_changed(self._doc.objects[self._selected_object_index])
-            self._field_panel.set_object(self._doc.objects[self._selected_object_index])
+            index = self._selected_object_index
+            if index is None:
+                return
+            draft = self._draft_document()
+            self._idf_service.resize_fields(draft, index, append)
+            self._commit_document(draft, index, rebuild_fields=True)
         except Exception as exc:
             QMessageBox.warning(self, "字段修改失败", str(exc))
 
-    def _on_object_changed(self, obj: IDFObject) -> None:
-        if self._doc is None or obj is None:
-            return
+    def _draft_document(self) -> IDFDocument:
+        if self._editor.toPlainText() != self._sync_baseline:
+            raise ValueError("请先修正并同步源码，再编辑对象")
+        return deepcopy(self._doc) if self._doc is not None else IDFDocument()
+
+    def _commit_document(
+        self, draft: IDFDocument, index: int, *, rebuild_fields: bool = False
+    ) -> None:
         focused_widget = QApplication.focusWidget()
-        index = next((i for i, candidate in enumerate(self._doc.objects) if candidate is obj), 0)
-        new_text = self._idf_service.serialize(self._doc)
+        new_text = self._idf_service.serialize(draft)
         doc = self._idf_service.parse(new_text, self._current_path)
+        if [(o.type_name, o.fields) for o in doc.objects] != [
+            (o.type_name, o.fields) for o in draft.objects
+        ]:
+            raise ValueError("修改无法保真写入 IDF，请检查引号和分隔符")
+        self._sync_timer.stop()
         if new_text != self._editor.toPlainText():
             cursor_pos = self._editor.textCursor().position()
             with QSignalBlocker(self._editor):
@@ -624,21 +641,34 @@ class MainWindow(QMainWindow):
                 cursor.endEditBlock()
                 cursor.setPosition(min(cursor_pos, self._editor.document().characterCount() - 1))
                 self._editor.setTextCursor(cursor)
+        structure_changed = self._doc is None or (
+            [obj.type_name for obj in self._doc.objects] != [obj.type_name for obj in doc.objects]
+        )
         self._doc = doc
         self._sync_baseline = new_text
-        target_idx = index if (0 <= index < len(doc.objects)) else (0 if doc.objects else None)
+        target_idx = min(index, len(doc.objects) - 1) if doc.objects else None
         self._selected_object_index = target_idx
-        self._tree.update_document(doc)
-        if target_idx is not None and doc.objects:
-            self._tree.select_object(doc.objects[target_idx])
-            self._field_panel.set_document(doc)
-            self._field_panel.rebind_object(doc.objects[target_idx])
+        if structure_changed:
+            self._tree.set_document(doc)
+        else:
+            self._tree.update_document(doc)
+        target = doc.objects[target_idx] if target_idx is not None else None
+        if target is not None:
+            self._tree.select_object(target)
+        self._field_panel.set_document(doc)
+        if rebuild_fields or target is None:
+            self._field_panel.set_object(target)
+        else:
+            self._field_panel.rebind_object(target)
+        self._field_panel.setEnabled(True)
+        self._status_obj.setText(f"对象: {doc.object_count()}")
         if focused_widget is not None and focused_widget.isVisible():
             focused_widget.setFocus()
         self._update_editor_highlight()
         self._modified = True
         self._status_modified.setText("[已修改]")
         self._update_title()
+        self._update_actions()
 
     def _auto_sync(self) -> None:
         """自动解析文本；未完成的输入禁用字段编辑，防止覆盖新文本。"""
@@ -716,7 +746,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "结果加载失败", str(exc))
 
     def _on_run_finished(self, result: RunResult) -> None:
-        self._load_results(result.run_dir)
+        if result.source_idf_path and (
+            not self._current_path
+            or Path(result.source_idf_path) != Path(self._current_path).absolute()
+        ):
+            self.statusBar().showMessage(f"模型已切换，运行 {result.run_id} 的结果已归档", 8000)
+        else:
+            self._load_results(result.run_dir)
         if self._history_view is not None:
             self._history_view.refresh()
 
@@ -734,12 +770,9 @@ class MainWindow(QMainWindow):
         try:
             doc = self._idf_service.parse(self._editor.toPlainText())
             if self._idf_service.add_output(doc, name, is_meter):
-                cursor = self._editor.textCursor()
-                cursor.beginEditBlock()
-                cursor.select(QTextCursor.Document)
-                cursor.insertText(self._idf_service.serialize(doc))
-                cursor.endEditBlock()
-                self._auto_sync()
+                self._commit_document(
+                    doc, self._selected_object_index or 0, rebuild_fields=True
+                )
             self.statusBar().showMessage(
                 f"已配置每小时输出: {name}；保存并重新运行后查看曲线。", 8000
             )
@@ -751,12 +784,7 @@ class MainWindow(QMainWindow):
         try:
             doc = self._idf_service.parse(self._editor.toPlainText())
             self._idf_service.configure_outputs(doc)
-            cursor = self._editor.textCursor()
-            cursor.beginEditBlock()
-            cursor.select(QTextCursor.Document)
-            cursor.insertText(self._idf_service.serialize(doc))
-            cursor.endEditBlock()
-            self._auto_sync()
+            self._commit_document(doc, self._selected_object_index or 0, rebuild_fields=True)
             self.statusBar().showMessage(
                 "已配置 SQLite、汇总报告和变量字典；时序变量仍需在 IDF 中请求。", 8000
             )
@@ -783,8 +811,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "解析错误", str(e))
 
     def _run_current(self) -> None:
-        self._field_panel.commit_pending()
         self._show_run_config()
+        if self._run_manager.is_running:
+            return
+        self._field_panel.commit_pending()
         if not self._current_path and not self._editor.toPlainText().strip():
             QMessageBox.warning(self, "警告", "没有可运行的 IDF 文件")
             return
@@ -809,7 +839,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "请先保存文件")
             return
         self._run_panel.set_idf(self._current_path)
-        if not self._config.is_ep_valid():
+        if not self._config.get_ep_executable():
             QMessageBox.warning(self, "警告", "未配置有效的 EnergyPlus 路径，请先在设置中配置。")
             self._show_settings()
             return
@@ -877,21 +907,32 @@ class MainWindow(QMainWindow):
                 act.triggered.connect(lambda checked=False, p=path: self._open_file(p))
                 self._recent_menu.addAction(act)
 
-    def closeEvent(self, event) -> None:
-        if not self._confirm_discard():
+    def _close_when_run_finished(self, result: RunResult) -> None:
+        if self._close_after_run:
+            QTimer.singleShot(0, self.close)
+        elif result.cancelled and self._history_view is not None:
+            self._history_view.refresh()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭窗口，必要时等待本窗口的运行结束归档。"""
+        if not self._close_after_run and not self._confirm_discard():
             event.ignore()
             return
         if self._run_manager.is_running:
+            event.ignore()
+            if self._close_after_run:
+                return
             ret = QMessageBox.question(
                 self,
                 "确认",
-                "EnergyPlus 正在运行，确定退出？",
+                "此窗口正在运行 EnergyPlus，是否取消该任务并关闭窗口？",
                 QMessageBox.Yes | QMessageBox.No,
             )
-            if ret == QMessageBox.No:
-                event.ignore()
-                return
-            self._run_manager.cancel()
+            if ret == QMessageBox.Yes:
+                self._close_after_run = True
+                self.setEnabled(False)
+                self._run_manager.cancel()
+            return
         self._config.save()
         self.windowClosed.emit(self)
         event.accept()
@@ -973,17 +1014,11 @@ class MainWindow(QMainWindow):
             objects = self._idf_service.parse_objects(text)
             if not objects:
                 raise ValueError("剪贴板没有 IDF 对象")
-            if self._doc is None:
-                self._doc = IDFDocument()
+            draft = self._draft_document()
             idd = self._idd_service.document if self._idd_service else None
-            count = self._idf_service.paste_objects(self._doc, objects, idd)
+            count = self._idf_service.paste_objects(draft, objects, idd)
             if count:
-                self._on_object_changed(self._doc.objects[-1])
-                self._tree.set_document(self._doc)
-                target = self._doc.objects[self._selected_object_index]
-                self._tree.select_object(target)
-                self._field_panel.set_object(target)
-                self._refresh_validation()
+                self._commit_document(draft, len(draft.objects) - 1, rebuild_fields=True)
             self.statusBar().showMessage(f"已粘贴 {count} 个对象，相同定义自动跳过", 5000)
         except Exception as exc:
             QMessageBox.warning(self, "粘贴失败", str(exc))
@@ -993,20 +1028,24 @@ class MainWindow(QMainWindow):
         if self._doc is None:
             return
         index = next((i for i, c in enumerate(self._doc.objects) if c is obj), None)
-        if index is not None:
-            new_obj = self._idf_service.duplicate_object(self._doc, index)
+        if index is None:
+            return
+        try:
+            self._field_panel.commit_pending()
+            draft = self._draft_document()
+            new_obj = self._idf_service.duplicate_object(draft, index)
             if new_obj:
-                self._on_object_changed(new_obj)
-                self._tree.set_document(self._doc)
-                target = self._doc.objects[-1]
-                self._tree.select_object(target)
-                self._field_panel.set_object(target)
-                self._refresh_validation()
+                self._commit_document(draft, len(draft.objects) - 1, rebuild_fields=True)
                 self.statusBar().showMessage(f"已创建对象副本: {new_obj.name()}", 3000)
+        except Exception as exc:
+            QMessageBox.warning(self, "复制对象失败", str(exc))
 
     def _delete_object(self, obj: IDFObject) -> None:
-        """删除指定对象并刷新界面。"""
+        """删除指定对象并同步保存所用的源码。"""
         if self._doc is None:
+            return
+        index = next((i for i, c in enumerate(self._doc.objects) if c is obj), None)
+        if index is None:
             return
         reply = QMessageBox.question(
             self,
@@ -1016,22 +1055,14 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        index = next((i for i, c in enumerate(self._doc.objects) if c is obj), None)
-        if index is not None:
-            self._idf_service.remove_object(self._doc, index)
-            new_text = self._idf_service.serialize(self._doc)
-            self._doc = self._idf_service.parse(new_text, self._current_path)
-            self._sync_baseline = new_text
-            self._tree.set_document(self._doc)
-            self._field_panel.set_document(self._doc)
-            self._selected_object_index = 0 if self._doc.objects else None
-            sel_obj = self._doc.objects[0] if self._doc.objects else None
-            self._field_panel.set_object(sel_obj)
-            self._update_editor_highlight()
-            self._modified = True
-            self._status_modified.setText("[已修改]")
-            self._update_title()
-            self.statusBar().showMessage(f"已删除对象 {obj.type_name}", 3000)
+        try:
+            self._field_panel.commit_pending()
+            draft = self._draft_document()
+            if self._idf_service.remove_object(draft, index):
+                self._commit_document(draft, index, rebuild_fields=True)
+                self.statusBar().showMessage(f"已删除对象 {obj.type_name}", 3000)
+        except Exception as exc:
+            QMessageBox.warning(self, "删除对象失败", str(exc))
 
     def _batch_edit_fields(self, values: list[str]) -> None:
         """原子覆盖参数，错误时保留原文档。"""
@@ -1041,10 +1072,10 @@ class MainWindow(QMainWindow):
         if self._doc is None or self._selected_object_index is None:
             return
         try:
-            self._idf_service.update_fields(self._doc, self._selected_object_index, values)
-            self._on_object_changed(self._doc.objects[self._selected_object_index])
-            self._field_panel.set_object(self._doc.objects[self._selected_object_index])
-            self._refresh_validation()
+            index = self._selected_object_index
+            draft = self._draft_document()
+            self._idf_service.update_fields(draft, index, values)
+            self._commit_document(draft, index, rebuild_fields=True)
         except Exception as exc:
             QMessageBox.warning(self, "属性粘贴失败", str(exc))
 

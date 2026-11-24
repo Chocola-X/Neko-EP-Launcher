@@ -66,7 +66,7 @@ class RunRepository:
         if not self._runs_dir.exists():
             return records
         for run_dir in self._runs_dir.iterdir():
-            if not run_dir.is_dir():
+            if run_dir.is_symlink() or not run_dir.is_dir():
                 continue
             record = self.load_run(run_dir)
             if record is not None:
@@ -110,14 +110,11 @@ class RunRepository:
 
     def get_run_by_id(self, run_id: str) -> RunRecord | None:
         """按 run_id 查找运行记录。"""
+        if not run_id or run_id in (".", "..") or any(ch in run_id for ch in "/\\"):
+            return None
         run_dir = self._runs_dir / run_id
-        if run_dir.exists():
+        if not run_dir.is_symlink() and run_dir.is_dir():
             return self.load_run(run_dir)
-        for d in self._runs_dir.iterdir():
-            if d.is_dir() and d.name.startswith(run_id):
-                record = self.load_run(d)
-                if record is not None:
-                    return record
         return None
 
     def filter_runs(

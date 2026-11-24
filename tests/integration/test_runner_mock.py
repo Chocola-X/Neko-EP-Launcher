@@ -13,8 +13,9 @@ from src.services.ep_runner import EPRunner
 @pytest.mark.parametrize("code", [0, 1])
 def test_process_lifecycle(monkeypatch, tmp_path: Path, code: int) -> None:
     process = MagicMock()
-    process.waitForStarted.return_value = True
-    factory = MagicMock(return_value=process)
+    factory = MagicMock(
+        return_value=process, ExitStatus=QProcess.ExitStatus, ProcessError=QProcess.ProcessError
+    )
     monkeypatch.setattr("src.services.ep_runner.QProcess", factory)
     runner = EPRunner()
     exe = tmp_path / "energyplus"
@@ -29,11 +30,12 @@ def test_process_lifecycle(monkeypatch, tmp_path: Path, code: int) -> None:
     assert "--readvars" in process.start.call_args.args[1]
     assert "weather.epw" in process.start.call_args.args[1]
     assert runner.run(str(exe), tmp_path, "input.idf") is None
-    runner.cancel()
-    process.kill.assert_called_once()
     process.readAllStandardOutput.return_value.data.return_value = b"Progress\n"
     runner._read_output()
+    completed = []
+    runner.finished.connect(completed.append)
     runner._on_finished(code, QProcess.NormalExit)
+    result = completed[0]
     assert result.success == (code == 0)
     assert "eplusout.err" in result.output_files
     assert "input.idf" not in result.output_files
@@ -44,13 +46,16 @@ def test_process_lifecycle(monkeypatch, tmp_path: Path, code: int) -> None:
 
 def test_failed_start(monkeypatch, tmp_path: Path) -> None:
     process = MagicMock()
-    process.waitForStarted.return_value = False
-    monkeypatch.setattr("src.services.ep_runner.QProcess", MagicMock(return_value=process))
+    factory = MagicMock(
+        return_value=process, ExitStatus=QProcess.ExitStatus, ProcessError=QProcess.ProcessError
+    )
+    monkeypatch.setattr("src.services.ep_runner.QProcess", factory)
     exe = tmp_path / "energyplus"
     exe.touch()
     runner = EPRunner()
-    assert runner.run(str(exe), tmp_path, "input.idf", "weather.epw", "-D") is None
+    result = runner.run(str(exe), tmp_path, "input.idf", "weather.epw", "-D")
+    assert result is not None and runner.is_running
+    runner._on_error(QProcess.ProcessError.FailedToStart)
     assert runner.state == EPRunner.STATE_ERROR
+    process.deleteLater.assert_called_once()
     assert runner.run("/absent", tmp_path, "input.idf") is None
-    runner._on_error(QProcess.FailedToStart)
-    assert runner.state == EPRunner.STATE_ERROR

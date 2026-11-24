@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
@@ -19,7 +21,7 @@ from src.core.entities.run_options import RunOptions
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class RunResult:
     """运行结果。
 
@@ -36,7 +38,13 @@ class RunResult:
         error_message: 错误信息。
         output_files: 输出文件名列表。
         log_text: 完整日志文本。
-        command: 完整命令行。
+        command: 便于阅读的命令行。
+        task_id: 与用户可编辑的运行目录名独立的内部任务标识。
+        command_args: 传给进程的完整参数数组，首项是可执行文件。
+        working_directory: 引擎进程的工作目录。
+        source_idf_path: 用户选择的原始模型路径。
+        idd_path: 实际使用的 IDD 快照路径。
+        cancelled: 是否由用户取消。
     """
 
     run_id: str
@@ -49,9 +57,15 @@ class RunResult:
     exit_code: int = -1
     success: bool = False
     error_message: str = ""
-    output_files: list[str] = field(default_factory=list)
+    output_files: tuple[str, ...] = ()
     log_text: str = ""
     command: str = ""
+    task_id: str = field(default_factory=lambda: uuid4().hex)
+    command_args: tuple[str, ...] = ()
+    working_directory: str = ""
+    source_idf_path: str = ""
+    idd_path: str = ""
+    cancelled: bool = False
 
 
 class EPRunner(QObject):
@@ -100,6 +114,9 @@ class EPRunner(QObject):
         weather_filename: str = "",
         extra_args: str = "",
         run_options: RunOptions | None = None,
+        *,
+        working_directory: Path | None = None,
+        source_idf_path: str = "",
     ) -> RunResult | None:
         """在指定目录启动 EnergyPlus。
 
@@ -110,6 +127,8 @@ class EPRunner(QObject):
             weather_filename: 工作目录内天气文件名（可空）。
             extra_args: 附加命令行参数（空格分隔）。
             run_options: 结构化运行选项（优先于 extra_args）。
+            working_directory: 输入快照目录，省略时使用运行目录。
+            source_idf_path: 提交任务时的原始模型路径。
 
         Returns:
             RunResult 或 None（启动失败）。
@@ -122,41 +141,49 @@ class EPRunner(QObject):
             return None
 
         run_dir_path = Path(run_dir)
+        work_dir = working_directory or run_dir_path
         if run_options is not None:
             if weather_filename and not run_options.weather_path:
-                run_options.weather_path = weather_filename
+                run_options = replace(run_options, weather_path=weather_filename)
+            weather_filename = run_options.weather_path
             args = run_options.to_args(idf_filename)
         else:
             args = []
             if weather_filename:
                 args.extend(["-w", weather_filename])
             if extra_args:
-                args.extend(extra_args.split())
+                args.extend(shlex.split(extra_args))
             args.append(idf_filename)
-        command = f"{ep_executable} {' '.join(args)}"
+        command_args = (ep_executable, *args)
+        command = shlex.join(command_args)
 
         result = RunResult(
             run_id=run_dir_path.name,
             run_dir=str(run_dir_path),
-            idf_path=str(run_dir_path / idf_filename),
-            weather_path=str(run_dir_path / weather_filename) if weather_filename else "",
+            idf_path=str(work_dir / idf_filename),
+            weather_path=str(work_dir / weather_filename) if weather_filename else "",
+            idd_path=str(work_dir / run_options.idd_path)
+            if run_options and run_options.idd_path else "",
+            source_idf_path=source_idf_path,
+            working_directory=str(work_dir),
+            command_args=command_args,
             start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             command=command,
         )
         self._current_result = result
         self._log_lines = []
-        self._start_ts = time.time()
+        self._start_ts = time.monotonic()
 
         self._process = QProcess(self)
-        self._process.setWorkingDirectory(str(run_dir_path))
-        self._process.setProcessChannelMode(QProcess.MergedChannels)  # type: ignore[attr-defined]
+        self._process.setWorkingDirectory(str(work_dir))
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._read_output)
         self._process.finished.connect(self._on_finished)
         self._process.errorOccurred.connect(self._on_error)
 
         self._set_state(self.STATE_RUNNING)
         self._log("=== EnergyPlus 运行开始 ===")
-        self._log(f"工作目录: {run_dir_path}")
+        self._log(f"工作目录: {work_dir}")
         self._log(f"IDF: {idf_filename}")
         if weather_filename:
             self._log(f"天气文件: {weather_filename}")
@@ -164,16 +191,12 @@ class EPRunner(QObject):
         self._log("")
 
         self._process.start(ep_executable, args)
-        if not self._process.waitForStarted(5000):
-            self.error.emit("无法启动 EnergyPlus 进程")
-            self._set_state(self.STATE_ERROR)
-            self._process = None
-            return None
         return result
 
     def cancel(self) -> None:
         """取消当前运行。"""
-        if self._process and self.is_running:
+        if self._process and self._current_result and not self._current_result.cancelled:
+            self._current_result = replace(self._current_result, cancelled=True)
             self._log("\n[用户取消运行]")
             self._process.kill()
 
@@ -188,43 +211,60 @@ class EPRunner(QObject):
         for line in text.splitlines():
             self._log(line)
 
-    def _on_finished(self, exit_code: int, _exit_status: QProcess.ExitStatus) -> None:
-        elapsed = time.time() - self._start_ts
+    def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         if self._current_result is None:
             return
-        r = self._current_result
-        r.end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        r.elapsed = elapsed
-        r.exit_code = exit_code
-        r.success = exit_code == 0
-
-        run_dir = Path(r.run_dir)
-        r.output_files = []
-        if run_dir.exists():
-            idf_name = Path(r.idf_path).name
-            for entry in sorted(run_dir.iterdir()):
-                if entry.is_file() and entry.name != idf_name:
-                    r.output_files.append(entry.name)
+        self._read_output()
+        result = self._current_result
+        elapsed = time.monotonic() - self._start_ts
+        success = (
+            exit_code == 0
+            and exit_status == QProcess.ExitStatus.NormalExit
+            and not result.cancelled
+        )
+        try:
+            output_files = tuple(
+                entry.name
+                for entry in sorted(Path(result.run_dir).iterdir())
+                if entry.is_file() and entry != Path(result.idf_path)
+            )
+        except OSError as exc:
+            logger.warning("无法列出运行输出：%s", exc)
+            output_files = ()
 
         self._log("")
         self._log(f"=== 运行结束 (退出码: {exit_code}, 耗时: {elapsed:.2f}s) ===")
-        if r.success:
-            self._log(f"输出文件: {len(r.output_files)} 个")
-        else:
+        if success:
+            self._log(f"输出文件: {len(output_files)} 个")
+        elif not result.cancelled:
             self._log("运行失败，请检查 .err 文件")
 
-        r.log_text = "\n".join(self._log_lines)
-        self._set_state(self.STATE_FINISHED if r.success else self.STATE_ERROR)
-        self.finished.emit(r)
+        completed = replace(
+            result,
+            end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            elapsed=elapsed,
+            exit_code=exit_code,
+            success=success,
+            output_files=output_files,
+            log_text="\n".join(self._log_lines),
+        )
+        self._current_result = None
         if self._process is not None:
             self._process.deleteLater()
         self._process = None
+        self._set_state(self.STATE_FINISHED if success else self.STATE_ERROR)
+        self.finished.emit(completed)
 
     def _on_error(self, proc_error: QProcess.ProcessError) -> None:
-        msg = f"进程错误: {proc_error}"
+        if self._current_result is None or self._process is None:
+            return
+        msg = f"进程错误: {self._process.errorString()}"
+        self._current_result = replace(self._current_result, error_message=msg)
         self._log(msg)
-        self.error.emit(msg)
-        self._set_state(self.STATE_ERROR)
+        if not self._current_result.cancelled:
+            self.error.emit(msg)
+        if proc_error == QProcess.ProcessError.FailedToStart:
+            self._on_finished(-1, QProcess.ExitStatus.CrashExit)
 
     def _log(self, line: str) -> None:
         self._log_lines.append(line)

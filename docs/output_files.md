@@ -23,7 +23,18 @@
 | `eplusout.eio` | 一次性环境汇总 | 逗号分隔格式，记录建筑尺寸、材质构造、区域几何一次性摘要 | 原始文本查看 | R-4 |
 | `eplusout.bnd` | 暖通分支节点连接 | 文本文件，记录 HVAC 节点连通关系 | 原始文本查看 | R-4 |
 | `enhanced-report.html` | 增强离线报告 | 启动器生成的自包含单文件综合报告（含图表、时序和可搜索汇总） | 运行后自动生成或手动导出，可脱机分享 | - |
-| `run.json` | 运行元数据归档 | 记录 run_id、耗时、命令行、退出码、IDF/EPW 哈希及输出清单 | 持久化层索引，用于运行历史检索与复盘 | - |
+| `run.json` | 运行元数据归档 | 记录任务标识、引擎版本、实际命令、退出码、输入快照哈希及输出清单 | 持久化层索引，用于运行历史检索与复盘 | - |
+
+---
+
+### 运行输入与归档
+
+- 每次运行独占 `data/runs/<run_id>/`。运行 ID 为一个目录名，已有目录、文件或符号链接占用名称时自动追加编号。单次任务另有独立的 `task_id`，即使同名实验从不同窗口发起也可区分。
+- 运行工作目录是归档下的 `inputs/`。启动器复制实际使用的 IDF、EPW 和 IDD，并在运行副本中重写已识别的资源路径。引擎输出仍写入运行目录根部（R-3、R-9）。
+- 支持 `Schedule:File`、`Schedule:File:Shading`、`Construction:WindowDataFile`、`Table:IndependentVariable` 和 `Table:Lookup` 的文件依赖。相对路径从原模型所在目录解析。依赖按独立名称归档，两个目录中的同名文件可并存（R-2、R-10）。
+- 高级参数 `-w` 优先于所选 EPW，`-i` 优先于安装目录的 IDD。未指定天气时，如原模型目录存在 `in.epw` 则归档使用该文件。显式文件缺失、输出目录覆盖（`-d`）、未知参数，以及 EPMacro、ExternalInterface、PythonPlugin 和参数化预处理工作流会在准备阶段给出错误。用 `-r` 时，模型旁的自定义 `.rvi` 或 `.mvi` 也会提示暂不支持（R-2、R-3）。[EnergyPlus 9.4 命令行实现](https://github.com/NREL/EnergyPlus/blob/v9.4.0/src/EnergyPlus/CommandLineInterface.cc)
+- `run.json` 的 `command_args` 是实际启动参数数组，首项为引擎可执行文件。`working_directory` 和 `output_directory` 记录实际工作及输出位置。`inputs` 列出各文件的角色、来源、相对归档路径和启动前的 SHA256。取消与启动失败也会记录终态。
+- 重跑时，把 `inputs/` 复制到新的运行目录，在该副本中执行 `command_args`，使用 `engine_version` 对应的引擎安装。归档包含模型输入，重跑仍依赖对应的 EnergyPlus 安装及其辅助程序。
 
 ---
 
@@ -38,6 +49,7 @@
    - 优先解析 `eplustbl.xml` 获取精确命名的表格与单元格；
    - 若模型仅输出了 HTML 格式，启动器内置 HTML 表格解析器自动提取表格；
    - 若表格文件缺失，启动器可从 `eplusout.sql` 的 `TabularDataWithStrings` 表中重构还原汇总表。
+   - 柱状图保留单位并拒绝混合量纲。终端用能饼图仅接受年度建筑性能汇总中已知资源的同单位可加分项。总计用于校验，子分类表、负值、零总量会给出提示（R-2、R-4d）。
 
 ---
 

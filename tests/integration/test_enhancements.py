@@ -9,10 +9,10 @@ from src.core.exceptions import ResultParseError
 from src.core.idd.models import FieldDef, IDDDocument, ObjectDef
 from src.core.results.models import ReportTable
 from src.core.results.sql_reader import SQLReader
+from src.core.results.summary_chart import prepare_summary_chart
 from src.services.idf_service import IDFService
 from src.services.results_service import ResultsService
 from src.ui.main_window import MainWindow
-from src.ui.results.summary_plot import SummaryPlotView
 from src.ui.results.timeseries_plot import TimeseriesPlotView
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "test_run_001"
@@ -59,7 +59,9 @@ def test_csv_export(tmp_path: Path) -> None:
 
 def test_summary_uses_selected_column() -> None:
     table = ReportTable("Report", "Facility", "Energy", ["A", "B"], ["row"], [["1", "8"]])
-    assert SummaryPlotView._extract_numeric_data(table, 1) == [("row", 8.0)]
+    chart = prepare_summary_chart(table, 1, pie=False)
+    assert chart.labels == ("row",)
+    assert chart.values == (8.0,)
 
 
 def test_async_timeseries(qtbot) -> None:
@@ -81,15 +83,13 @@ def test_async_timeseries(qtbot) -> None:
 def test_editor_sync_and_field_undo(qtbot, tmp_path: Path) -> None:
     app = Application(tmp_path / "config.json", tmp_path / "runs")
     window = MainWindow(
-        app.run_manager, app.idf_service, app.config_service, app.idd_service, app.results_service
+        app.create_run_manager(), app.idf_service, app.config_service, app.idd_service, app.results_service
     )
     qtbot.addWidget(window)
     window._new_file()
     window._editor.setPlainText("! keep\nZone, A;\n")
     window._auto_sync()
-    obj = window._doc.objects[0]
-    obj.set_field(0, "B")
-    window._on_object_changed(obj)
+    window._edit_field(0, "B")
     assert window._editor.toPlainText() == "! keep\nZone, B;\n"
     window._editor.undo()
     assert window._editor.toPlainText() == "! keep\nZone, A;\n"
@@ -146,7 +146,7 @@ def test_open_action_displays_picker(qtbot, tmp_path: Path, monkeypatch) -> None
     calls = []
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (calls.append(args) or ("", "")))
     container = Application(tmp_path / "config.json", tmp_path / "runs")
-    window = MainWindow(container.run_manager, container.idf_service, container.config_service)
+    window = MainWindow(container.create_run_manager(), container.idf_service, container.config_service)
     qtbot.addWidget(window)
     window._act_open.trigger()
     assert len(calls) == 1
