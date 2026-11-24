@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -312,8 +312,16 @@ class MainWindow(QMainWindow):
             (self._act_open, QStyle.SP_DialogOpenButton, "打开 IDF（Ctrl+O）"),
             (self._act_save, QStyle.SP_DialogSaveButton, "保存当前 IDF（Ctrl+S）"),
             (self._act_save_as, QStyle.SP_DialogSaveButton, "另存为新文件"),
-            (self._act_properties, QStyle.SP_FileDialogDetailedView, "切换到属性编辑"),
-            (self._act_source, QStyle.SP_FileIcon, "切换到 IDF 源码编辑"),
+            (
+                self._act_properties,
+                QStyle.SP_FileDialogDetailedView,
+                "切换到属性编辑",
+            ),
+            (
+                self._act_source,
+                QStyle.SP_FileIcon,
+                "切换到 IDF 源码编辑",
+            ),
             (self._act_validate, QStyle.SP_DialogApplyButton, "校验当前模型"),
             (
                 self._act_run_config,
@@ -322,13 +330,47 @@ class MainWindow(QMainWindow):
             ),
             (self._act_run, QStyle.SP_MediaPlay, "运行当前模型（F5）"),
             (self._act_results, QStyle.SP_DirOpenIcon, "打开已有结果目录"),
-            (self._act_settings, QStyle.SP_ComputerIcon, "设置 EnergyPlus 路径和系统主题"),
+            (
+                self._act_settings,
+                QStyle.SP_ComputerIcon,
+                "设置 EnergyPlus 路径和系统主题",
+            ),
         ]
-        for action, icon, tip in actions:
-            action.setIcon(self.style().standardIcon(icon))
+        self._toolbar = tb
+        self._toolbar_icons = {
+            action: standard_icon for action, standard_icon, _ in actions
+        }
+        for action, _, tip in actions:
             action.setToolTip(tip)
             tb.addAction(action)
         self.addToolBar(tb)
+        self._update_toolbar_icons(QApplication.palette())
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.paletteChanged.connect(self._update_toolbar_icons)
+
+    def _update_toolbar_icons(self, palette: QPalette) -> None:
+        size = self._toolbar.iconSize()
+        scale = self._toolbar.devicePixelRatioF()
+        for action, standard_icon in self._toolbar_icons.items():
+            icon = self.style().standardIcon(standard_icon)
+            pixmap = icon.pixmap(size, scale)
+            image = pixmap.toImage()
+            colors = {
+                color.getRgb()[:3]
+                for y in range(image.height())
+                for x in range(image.width())
+                if (color := image.pixelColor(x, y)).alpha() >= 128
+            }
+            # 保留有明暗层次的原图，容许单色图标在混合后有少量色值偏差。
+            channels = zip(*colors, strict=True)
+            if not colors or any(max(channel) - min(channel) > 16 for channel in channels):
+                action.setIcon(icon)
+                continue
+            with QPainter(pixmap) as painter:
+                painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+                painter.fillRect(pixmap.rect(), palette.color(QPalette.ButtonText))
+            action.setIcon(QIcon(pixmap))
 
     def _show_run_config(self) -> None:
         self._run_dock.show()
